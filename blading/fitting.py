@@ -4,14 +4,18 @@ from typing import Optional
 import numpy as np
 import matplotlib.pyplot as plt
 from numpy.typing import NDArray
-from blade import Camber, Section2D, Thickness
+from blading.blade import Camber, Section2D, Thickness
 from intersect import intersection
 from scipy.spatial import Delaunay
 
+from scipy.spatial import Voronoi, ConvexHull
+from scipy.spatial.distance import cdist
 
 import geometry
 import geometry.surfaces
 from geometry.distributions import double_sided, cluster_left
+from geometry.curves import cumulative_length
+from scipy.interpolate import make_lsq_spline
 
 
 @dataclass
@@ -186,7 +190,7 @@ def calc_thickness(xy_camber, xy_section, t_ref) -> NDArray:
     return thickness
 
 
-def fit_section(xy_section, n_fit: int = 200, n_fine: int = 250):
+def _fit_section(xy_section, n_fit: int = 200, n_fine: int = 250):
     upper, lower = split_section(xy_section)
 
     s = np.linspace(0, 1, 50)
@@ -233,28 +237,82 @@ def fit_section(xy_section, n_fit: int = 200, n_fine: int = 250):
     return FitSectionResult(section=section, conv=np.array(conv), n_arr=np.array(n_arr))
 
 
-def fit_blade(sections: list[NDArray]):
-    #     num_pts, num_sections, _ = blade.shape
-    #     x, r, rt = np.moveaxis(blade, -1, 0)
+def fit_section(xy_section):
+    xy_camber = find_camber(xy_section)
 
-    #     camber = np.zeros((50, num_sections, 3))
-    #     thickness = np.zeros((50, num_sections))
+    # Close section
+    xy_camber = np.r_[xy_camber, xy_camber[[0]]]
 
-    #     for j in range(num_sections):
-    #         xy_section = np.c_[x[:, j], rt[:, j]]
-    #         xr_section = np.c_[x[:, j], r[:, j]]
+    xy_camber = extend_le_te(xy_camber, xy_section)
 
-    #         res = fit_section(xy_section)
-    #         if not res.success:
-    #             raise Exception("Did not fit section within tolerance")
-    #         xy_camber = res.camber
+    camber = Camber.from_xy(xy_camber)
+    t_ref = 0.5 * camber.chord
 
-    #         # Interp section camberline onto section mid xr coordinates
-    #         xr_section, _ = section_camber_guess(xr_section)
-    #         r_camber = np.interp(xy_camber[:, 0], xr_section[:, 0], xr_section[:, 1])
+    # Reinterpolate with extra fine spacing
+    s = double_sided(0, 1, 200, 0.7, r=1.2)
+    xy_camber = geometry.curve_interp(xy_camber, s, deg=3, normalise=True)
+    t = calc_thickness(xy_camber, xy_section, t_ref)
 
-    #         camber[:, j, :] = np.c_[xy_camber[:, 0], r_camber, xy_camber[:, 1]]
-    #         # thickness[:, j] = res.thickness
+    # Reinterpolate with equal fine spacing along s-t curve
+    c = np.c_[s, t / max(t)]
+    sc = np.linspace(0, 1, 250)
+    c = geometry.curve_interp(c, sc, deg=3, normalise=True)
+    s = c[:, 0]
 
-    #     return camber
-    raise NotImplementedError()
+    xy_camber = geometry.curve_interp(xy_camber, s, deg=3, normalise=True)
+    t = calc_thickness(xy_camber, xy_section, t_ref)
+
+    camber = Camber.from_xy(xy_camber)
+    t_to_chord = t / camber.chord
+    thickness = Thickness(camber.s, t_to_chord)
+    return Section2D.new(camber, thickness)
+
+
+def find_camber(xy_section):
+    vor = Voronoi(xy_section)
+    hull = ConvexHull(xy_section)
+
+    # Get hull's bounding region (simplex edges)
+    hull_path = hull.equations[:, :-1]  # Normal vectors
+    hull_offset = hull.equations[:, -1]  # Offsets
+
+    # Function to check if a point is inside the convex hull
+    def inside_hull(v):
+        return np.all(np.dot(hull_path, v) + hull_offset <= 1e-10)
+
+    # Filter Voronoi vertices inside the convex hull
+    verts = np.array([v for v in vor.vertices if inside_hull(v)])
+
+    # Order points
+    def order_points(points):
+        points = np.array(points)
+
+        # Find the point with the lowest (x, y) coordinate
+        sorted_idx = np.lexsort((points[:, 1], points[:, 0]))
+        start_idx = sorted_idx[0]
+        end_idx = sorted_idx[-1]
+        max_dist = np.linalg.norm(points[start_idx] - points[end_idx])
+
+        ordered = [points[start_idx]]  # Start path with the first point
+        remaining = np.delete(points, start_idx, axis=0)  # Remove from remaining
+
+        while len(remaining) > 0:
+            last_point = ordered[-1].reshape(1, -1)  # Reshape for cdist
+            # Compute distances to remaining points
+            distances = cdist(last_point, remaining)
+            next_idx = np.argmin(distances)  # Find the closest point
+            if distances[0, next_idx] < max_dist / 10:
+                # Add to ordered list if within distance threshold
+                ordered.append(remaining[next_idx])
+            remaining = np.delete(remaining, next_idx, axis=0)  # Remove from remaining
+
+        return np.array(ordered)
+
+    verts = order_points(verts)
+
+    cum_dist = cumulative_length(verts, normalise=True)
+    x = np.linspace(0, 1, 100)
+    knots = [*np.zeros(3), *x, *np.ones(3)]
+    smooth_spl = make_lsq_spline(cum_dist, verts, t=knots)
+    xy_camber = smooth_spl(x)
+    return xy_camber

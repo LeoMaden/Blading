@@ -10,6 +10,41 @@ from blading.blade import (
     SupersonicSplitCamberParam,
 )
 import blading
+import blading.blade
+from blading import misc
+from blading import blade
+from blading.fitting import NormalIntersectionsError
+
+from scipy.spatial import Voronoi, voronoi_plot_2d, ConvexHull, convex_hull_plot_2d
+from scipy.spatial.distance import cdist
+from geometry.curves import cumulative_length
+from scipy.interpolate import make_lsq_spline
+
+
+def load_section():
+    bd = BladeDef.read(
+        Path(
+            "/home/lm859/rds/hpc-work/projects/sensitivity_study/rows/original/I01R_SLS_n100_V604/Blade_Definition"
+        )
+    )
+    i_sec = 0
+    rtx = bd.sections[i_sec].rtx_blade[:-1]
+    xy_section = np.c_[rtx[:, 2], rtx[:, 0] * rtx[:, 1]]
+    return xy_section
+
+
+def test_compare_original_and_fitted_section():
+    xy_section = load_section()
+    try:
+        s = fit_section(xy_section)
+    except NormalIntersectionsError as e:
+        e.plot()
+
+    plt.plot(xy_section[:, 0], xy_section[:, 1], "k-")
+    plt.plot(s.xy_upper[:, 0], s.xy_upper[:, 1], "r.--")
+    plt.plot(s.xy_lower[:, 0], s.xy_lower[:, 1], "r.--")
+    plt.axis("equal")
+    plt.show()
 
 
 def test_camber_parameterisation():
@@ -61,5 +96,81 @@ def test_camber_parameterisation():
     plt.show()
 
 
+def test_BP33ThicknessParam_spline():
+    # Parameters for NACA 0008-34 from Rogalsky (2004)
+    tp = blading.blade.BP33ThicknessParam(
+        le_radius=0.00157,
+        pos_max_t=0.398,
+        max_t=0.0402 * 2,
+        curv_max_t=0.264,
+        te_thickness=0,
+        te_wedge=9.2 * 2,
+    )
+    # tp = blading.blade.BP33ThicknessParam(
+    #     le_radius=0.00157,
+    #     pos_max_t=0.398,
+    #     max_t=0.0402,
+    #     curv_max_t=0.4,
+    #     te_thickness=0.001,
+    #     te_wedge=5,
+    # )
+    s = np.linspace(0, 1, 100)
+    tp.plot_spline(s)
+
+
+def test_BP33ThicknessParam_parameterise():
+    bd = BladeDef.read(
+        Path(
+            "/home/lm859/rds/hpc-work/projects/sensitivity_study/rows/original/I01R_SLS_n100_V604/Blade_Definition"
+        )
+    )
+    i_sec = 0
+    rtx = bd.sections[i_sec].rtx_blade[:-1]
+    xy_section = np.c_[rtx[:, 2], rtx[:, 0] * rtx[:, 1]]
+    res = fit_section(xy_section)
+    thickness = blade.remove_round_te(res.section.thickness)
+    t_param = blading.blade.BP33ThicknessParam.parameterise(thickness)
+    print(t_param)
+    t_param.plot_spline(thickness.s)
+
+    thickness_fit = t_param.evaluate(thickness.s)
+
+    plt.plot(thickness.s, thickness.t, "k--")
+    plt.plot(thickness_fit.s, thickness_fit.t, "r-")
+    plt.show()
+
+
+def test_ShapeSpaceThicknessParam_parameterise():
+    bd = BladeDef.read(
+        Path(
+            "/home/lm859/rds/hpc-work/projects/sensitivity_study/rows/original/I01R_SLS_n100_V604/Blade_Definition"
+        )
+    )
+    i_sec = 20
+    rtx = bd.sections[i_sec].rtx_blade[:-1]
+    xy_section = np.c_[rtx[:, 2], rtx[:, 0] * rtx[:, 1]]
+    res = fit_section(xy_section)
+    thickness = blade.remove_round_te(res.section.thickness)
+    # thickness = res.section.thickness
+    # plt.plot(thickness.s, thickness.t)
+    # plt.show()
+    # return
+    t_param = blading.blade.ShapeSpaceThicknessParam.parameterise(thickness)
+
+    thickness_fit = t_param.evaluate(thickness.s)
+
+    plt.plot(thickness.s, thickness.t, "k--")
+    plt.plot(thickness_fit.s, thickness_fit.t, "r-")
+    plt.show()
+
+
 if __name__ == "__main__":
-    test_camber_parameterisation()
+    # test_voroni()
+    test_compare_original_and_fitted_section()
+
+    # test_camber_parameterisation()
+
+    # test_BP33ThicknessParam_spline()
+    # test_BP33ThicknessParam_parameterise()
+
+    # test_ShapeSpaceThicknessParam_parameterise()
