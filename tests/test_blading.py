@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from blading.fitting import fit_section
-from rolls_royce.blade_def import BladeDef
+from hydra.blade_def import BladeDef
 from blading.blade import (
     Section2D,
     SupersonicSplitCamberParam,
@@ -163,15 +163,16 @@ def test_BP34ThicknessParam_spline():
 def test_ShapeSpaceThicknessParam_parameterise():
     bd = BladeDef.read(
         Path(
-            "/home/lm859/rds/hpc-work/projects/sensitivity_study/rows/original/I01R_SLS_n100_V604/Blade_Definition"
+            # "/home/lm859/rds/hpc-work/projects/sensitivity_study/rows/original/I01R_SLS_n100_V604/Blade_Definition"
+            "/mnt/Tank/geometry/rolls-royce/TEN10/TEN_I01R"
         )
     )
     i_sec = 20
     rtx = bd.sections[i_sec].rtx_blade[:-1]
     xy_section = np.c_[rtx[:, 2], rtx[:, 0] * rtx[:, 1]]
     res = fit_section(xy_section)
-    thickness = blade.remove_round_te(res.section.thickness)
-    # thickness = res.section.thickness
+    # thickness = blade.remove_round_te(res.thickness)
+    thickness = res.thickness
     # plt.plot(thickness.s, thickness.t)
     # plt.show()
     # return
@@ -193,6 +194,6 @@ if __name__ == "__main__":
     # test_BP33ThicknessParam_spline()
     # test_BP33ThicknessParam_parameterise()
 
-    test_BP34ThicknessParam_spline()
+    # test_BP34ThicknessParam_spline()
 
-    # test_ShapeSpaceThicknessParam_parameterise()
+    test_ShapeSpaceThicknessParam_parameterise()

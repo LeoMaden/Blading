@@ -361,33 +361,34 @@ class ShapeSpaceThicknessParam:
         coords = np.r_[lower, upper[1:]]
         _, _, rad_le, _ = taubinSVD(coords)
 
+        x_join = 0.98 * x_max_t
+        x_stretch = 0.4
+        x_split = 0.1
+
         def create(x):
             return ShapeSpaceThicknessParam(
                 rad_le=rad_le,
                 max_t=max_t,
                 x_max_t=x_max_t,
-                rad_max_t=x[3],
+                rad_max_t=rad_max_t,
                 angle_te=angle_te,
                 t_te=t_te,
-                x_join=x[0] * x_max_t,
-                x_stretch=x[1],
-                x_split=x[2] * x[0] * x_max_t,
+                x_join=x_join,
+                x_stretch=x[0],
+                x_split=x[1],
             )
 
         def fun(x):
             t_param = create(x)
-            thickness_fit = t_param.evaluate(thickness.s)
-            return thickness.t - thickness_fit.t
+            thickness_param = t_param.evaluate(thickness.s)
+            ss = shapespace.value(thickness.s, thickness.t, t_te)
+            ss_param = shapespace.value(thickness.s, thickness_param.t, t_te)
+            front = (thickness.s < 0.5) & (thickness.s > 0.05)
 
-        x0 = np.array([0.9, 0.1, 0.8, 5])
-        bounds = (
-            [0, 0, 0, 0],
-            [1, 0.4, 1, np.inf],
-        )
-        res = least_squares(fun, x0, bounds=bounds, loss="soft_l1")
-        if not res.success:
-            raise Exception("Could not parameterise")
+            return ss[front] - ss_param[front]
 
+        x0 = [0.2, 0.2]
+        res = least_squares(fun, x0, loss="arctan")
         return create(res.x)
 
 
