@@ -9,6 +9,28 @@ from blading.fitting import (
     NormalIntersectionsError,
     ImproveCamberConvergenceError,
 )
+from blading import fitting
+
+
+def load_section():
+    bd = BladeDef.read(
+        Path(
+            "/home/lm859/rds/hpc-work/projects/sensitivity_study/rows/original/I01R_SLS_n100_V604/Blade_Definition"
+        )
+    )
+    i_sec = 4
+    rtx = bd.sections[i_sec].rtx_blade[:-1]
+    xy_section = np.c_[rtx[:, 2], rtx[:, 0] * rtx[:, 1]]
+    return xy_section
+
+
+def test_find_camber():
+    xy_section = load_section()
+    xy_camber = fitting.find_camber(xy_section)
+    plt.plot(*xy_camber.T)
+    plt.plot(*xy_section.T)
+    plt.axis("equal")
+    plt.show()
 
 
 def test():
@@ -51,4 +73,9 @@ def test():
     plt.show()
 
 
-test()
+def main():
+    test_find_camber()
+
+
+if __name__ == "__main__":
+    main()

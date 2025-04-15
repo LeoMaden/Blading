@@ -1,8 +1,10 @@
+from scipy.interpolate import BSpline
 from abc import ABC
 from dataclasses import dataclass, field, fields
 from enum import Enum, auto
 from pathlib import Path
 from typing import Callable, Protocol, Self, TypeVar
+import warnings
 from scipy.interpolate import make_interp_spline
 from scipy.integrate import cumulative_trapezoid
 import numpy as np
@@ -11,14 +13,17 @@ import matplotlib.pyplot as plt
 import vtk
 from scipy.optimize import minimize
 from numpy.polynomial import Polynomial
-from circle_fit import taubinSVD
 from scipy.optimize import least_squares
-from blading.misc import calc_te_t_param
+from blading import misc
+
+# from blading.misc import calc_te_t_param
 
 import geometry
 import geometry.surfaces
+from . import shapespace
 
-import shapespace
+from .misc import calc_te_t_param
+from circle_fit import taubinSVD
 
 
 # ======================================================================================
@@ -83,12 +88,19 @@ class Thickness:
     s: NDArray
     t: NDArray
 
-    def calc_ss(self):
-        t_te = self.t[-1]
-        valid = np.arange(1, len(self.s) - 1)
-        ss = np.nan * np.ones_like(self.s)
-        ss[valid] = shapespace.value(self.s[valid], self.t[valid], t_te)
-        return ss
+    # def calc_ss(self):
+    #     t_te = self.t[-1]
+    #     valid = np.arange(1, len(self.s) - 1)
+    #     ss = np.nan * np.ones_like(self.s)
+    #     ss[valid] = shapespace.value(self.s[valid], self.t[valid], t_te)
+    #     return ss
+
+
+def remove_round_te(thickness: Thickness):
+    te_poly, i_te = misc.fit_te_poly(thickness)
+    t = thickness.t.copy()
+    t[i_te:] = te_poly(thickness.s[i_te:])
+    return Thickness(thickness.s, t)
 
 
 @dataclass
@@ -207,8 +219,18 @@ class Blade:
 # ======================================================================================
 
 
+# ======================================================================================
+
+
+class ThicknessParam(Protocol):
+    def evaluate(self, s: NDArray) -> Thickness: ...
+
+    @staticmethod
+    def parameterise(thickness: Thickness) -> "ThicknessParam": ...
+
+
 @dataclass
-class ThicknessParam:
+class ShapeSpaceThicknessParam:
     rad_le: float
     max_t: float
     x_max_t: float
@@ -314,90 +336,285 @@ class ThicknessParam:
         self.ps = ps
 
     @staticmethod
-    def parameterise(x, t):
+    def parameterise(thickness: Thickness):
         # Maximum thickness
-        i_max_t = np.argmax(t)
-        max_t = t[i_max_t]
-        x_max_t = x[i_max_t]
+        i_max_t = np.argmax(thickness.t)
+        max_t = thickness.t[i_max_t]
+        x_max_t = thickness.s[i_max_t]
 
         # # Trailing edge
-        dtdx = np.gradient(t, x)
-        # thresh = np.interp(0.8, x, dtdx)  # dt/dx at 80% chord
-        # i_te = np.min(np.where((np.abs(dtdx) > 2 * np.abs(thresh)) & (x > 0.8))[0])
-        # # angle_te = np.degrees(np.arctan(-dtdx[i_te - 1]))
-
-        # # Extend trailing edge wedge
-        # i = (x <= x[i_te]) & (x >= x[i_te] - 0.1)
-        # te_poly = Polynomial.fit(x[i], t[i], 1)
-        # t_te = te_poly(1)
-        # angle_te = np.degrees(np.arctan(-te_poly.deriv(1)(1)))
-
-        t_te, angle_te = calc_te_t_param(x, t)
+        dtdx = np.gradient(thickness.t, thickness.s)
+        t_te, angle_te = calc_te_t_param(thickness)
 
         # State space
-        ss = shapespace.value(x, t, t_te)
+        ss = shapespace.value(thickness.s, thickness.t, t_te)
 
         # Curvature at max thickness
-        d2tdx2 = np.gradient(dtdx, x)
+        d2tdx2 = np.gradient(dtdx, thickness.s)
         rad_max_t = -1 / d2tdx2[i_max_t]
 
         # Leading edge radius
         i_le = 5
-        x_le, t_le = x[:i_le], t[:i_le]
+        x_le, t_le = thickness.s[:i_le], thickness.t[:i_le]
         upper = np.c_[x_le, t_le / 2]
         lower = np.c_[x_le, -t_le / 2][::-1]
         coords = np.r_[lower, upper[1:]]
-        xc, yc, rad_le, _ = taubinSVD(coords)
+        _, _, rad_le, _ = taubinSVD(coords)
 
-        # Optimize join and stretch parameters
-        t_param = ThicknessParam(
-            rad_le=rad_le,
-            max_t=max_t,
-            x_max_t=x_max_t,
-            rad_max_t=rad_max_t,
-            angle_te=angle_te,
-            t_te=t_te,
-            x_join=0.98 * x_max_t,
-            x_stretch=0.35,
-            x_split=0.15,
+        def create(x):
+            return ShapeSpaceThicknessParam(
+                rad_le=rad_le,
+                max_t=max_t,
+                x_max_t=x_max_t,
+                rad_max_t=x[3],
+                angle_te=angle_te,
+                t_te=t_te,
+                x_join=x[0] * x_max_t,
+                x_stretch=x[1],
+                x_split=x[2] * x[0] * x_max_t,
+            )
+
+        def fun(x):
+            t_param = create(x)
+            thickness_fit = t_param.evaluate(thickness.s)
+            return thickness.t - thickness_fit.t
+
+        x0 = np.array([0.9, 0.1, 0.8, 5])
+        bounds = (
+            [0, 0, 0, 0],
+            [1, 0.4, 1, np.inf],
         )
-
-        w = np.interp(x, [0, 0.1, 0.2, 1], [0.1, 0.1, 1, 1])
-        # w = np.ones_like(x)
-
-        def err(params):
-            a, b, c, d = params
-            t_param.x_join = a
-            t_param.x_stretch = b
-            t_param.x_split = c
-            t_param.rad_max_t = d
-            t_param._construct()
-            thickness = t_param.evaluate(x)
-            t_fit = thickness.t
-
-            return np.trapz(w * (t - t_fit) ** 2, x)
-
-        x0 = [0.4, 0.3, 0.1, rad_max_t]
-        constraints = [
-            {"type": "ineq", "fun": lambda p: p[0] - p[2]},
-            {"type": "ineq", "fun": lambda p: p[3]},
-            {"type": "ineq", "fun": lambda p: x_max_t - p[0]},
-            {"type": "ineq", "fun": lambda p: p[2] + 1e-5},
-        ]
-        res = minimize(
-            err, x0, constraints=constraints, tol=1e-16, options={"maxiter": 10_000}
-        )
+        res = least_squares(fun, x0, bounds=bounds, loss="soft_l1")
         if not res.success:
-            raise Exception(f"Error fitting params: {res.message}\n{res.x}")
-        else:
-            print(f"{res.x=}")
+            raise Exception("Could not parameterise")
 
-        a, b, c, d = res.x
-        t_param.x_join = a
-        t_param.x_stretch = b
-        t_param.x_split = c
-        t_param.rad_max_t = d
-        return t_param
+        return create(res.x)
+
+
+@dataclass
+class BP33ThicknessParam:
+    le_radius: float
+    pos_max_t: float
+    max_t: float
+    curv_max_t: float
+    te_wedge: float
+    te_thickness: float
+
+    @staticmethod
+    def _calc_b9(xt, yt, kt, rle):
+
+        # Polynomial coefficients (decreasing power order)
+        coef = [
+            27 / 4 * kt**2,
+            -27 * kt**2 * xt,
+            9 * kt * yt + 81 / 2 * kt**2 * xt**2,
+            2 * rle - 18 * kt * xt * yt - 27 * kt**2 * xt**3,
+            3 * yt**2 + 9 * kt * xt**2 * yt + 27 / 4 * kt**2 * xt**4,
+        ]
+        p = Polynomial(coef[::-1])
+        roots = p.roots()
+
+        LB = max(0, xt - np.sqrt((-2 * yt) / (3 * kt)))
+        UB = xt
+
+        roots = roots[roots.imag == 0].real  # Real roots only
+        if len(roots) == 0:
+            raise ValueError("No real roots found")
+        b9 = roots[(roots > LB) & (roots < UB)]
+        if len(b9) == 0:
+            raise ValueError("No real roots found inside bounds")
+        elif len(b9) > 1:
+            warnings.warn("Multiple roots found, choosing smallest")
+
+        b9 = np.min(b9)
+        return b9
+
+    def _calc_spline(self) -> BSpline:
+        xt = self.pos_max_t
+        yt = self.max_t / 2
+        kt = -self.curv_max_t
+        dzte = self.te_thickness / 2
+        bte = self.te_wedge / 2
+        rle = -self.le_radius
+
+        # Control points
+        b9 = BP33ThicknessParam._calc_b9(xt, yt, kt, rle)
+        t1 = 3 / 2 * kt * (xt - b9) ** 2 + yt
+        s4 = 2 * xt - b9
+        s5 = 1 + (dzte - t1) / np.tan(np.radians(bte))
+        s_control = [0, 0, b9, xt, s4, s5, 1]
+        t_control = [0, t1, yt, yt, yt, t1, dzte]
+
+        control_points = np.c_[s_control, t_control]
+        n = len(control_points)
+        k = 3
+        knots = [
+            *np.zeros(k),
+            *np.linspace(0, 1, n - k + 1),
+            *np.ones(k),
+        ]
+        spline = BSpline(t=knots, c=control_points, k=k)
+        return spline
+
+    def evaluate(self, s: NDArray) -> Thickness:
+        spline = self._calc_spline()
+        curve = spline(np.linspace(0, 1, 100))
+        t = 2 * np.interp(s, curve[:, 0], curve[:, 1])  # type: ignore
+        return Thickness(s=s, t=t)
+
+    def plot_spline(self, s: NDArray):
+        spline = self._calc_spline()
+        cp = spline.c
+        curve = spline(s)
+
+        plt.title("Half thickness")
+        plt.plot(cp[:, 0], cp[:, 1], "ko--")
+        plt.plot(curve[:, 0], curve[:, 1], "r.-")
+        plt.show()
+
+    @staticmethod
+    def parameterise(thickness: Thickness) -> "BP33ThicknessParam":
+        # Extract parameters from given thickness
+        max_t = np.max(thickness.t)
+        i_max_t = np.argmax(thickness.t)
+        pos_max_t = thickness.s[i_max_t]
+        dtds = np.gradient(thickness.t, thickness.s)
+        curv = np.gradient(dtds, thickness.s)
+        curv_max_t = -curv[i_max_t]
+
+        t_te, te_wedge = calc_te_t_param(thickness)
+
+        # Fit other parameters using least squares
+        def create(x):
+            return BP33ThicknessParam(
+                le_radius=x[0],
+                pos_max_t=pos_max_t,
+                max_t=max_t,
+                curv_max_t=curv_max_t,
+                te_thickness=t_te,
+                te_wedge=te_wedge,
+            )
+
+        def fun(x):
+            t_param = create(x)
+            thickness_fit = t_param.evaluate(thickness.s)
+            return thickness.t - thickness_fit.t
+
+        # x0 = np.array([0.001, 0, 0, 10])
+        # bounds = (
+        #     [0, 0, 0, 0],
+        #     [0.1, 0.5, 0.5, 90],
+        # )
+        x0 = np.array([0.001])
+        bounds = ([0], [np.inf])
+        res = least_squares(fun, x0, bounds=bounds, loss="linear")
+        if not res.success:
+            raise Exception("Could not parameterise")
+
+        return create(res.x)
+
+
+@dataclass
+class BP34ThicknessParam:
+    le_radius: float
+    pos_max_t: float
+    max_t: float
+    te_wedge: float
+    te_thickness: float
+    b8: float
+    b15: float
+
+    def _calc_spline(self):
+
+        xt = self.pos_max_t
+        yt = self.max_t / 2
+        dzte = self.te_thickness / 2
+        bte = np.radians(self.te_wedge / 2)
+        rle = -self.le_radius
+        b8 = self.b8
+        b15 = self.b15
+
+        # Bezier points
+        def cubic_bezier(x0, x1, x2, x3):
+            def f(u):
+                return (
+                    x0 * (1 - u) ** 3
+                    + 3 * x1 * u * (1 - u) ** 2
+                    + 3 * x2 * u**2 * (1 - u)
+                    + x3 * u**3
+                )
+
+            return f
+
+        def quartic_bezier(x0, x1, x2, x3, x4):
+            def f(u):
+                return (
+                    x0 * (1 - u) ** 4
+                    + 4 * x1 * u * (1 - u) ** 3
+                    + 6 * x2 * u**2 * (1 - u) ** 2
+                    + 4 * x3 * u**3 * (1 - u)
+                    + x4 * u**4
+                )
+
+            return f
+
+        # Leading edge control points
+        x0_l = 0
+        x1_l = 0
+        x2_l = (-3 * b8**2) / (2 * rle)
+        x3_l = xt
+
+        y0_l = 0
+        y1_l = b8
+        y2_l = yt
+        y3_l = yt
+
+        x_spline_l = cubic_bezier(x0_l, x1_l, x2_l, x3_l)
+        y_spline_l = cubic_bezier(y0_l, y1_l, y2_l, y3_l)
+
+        # Trailing edge control points
+        x0_t = xt
+        x1_t = (7 * xt - 3 * x2_l) / 4
+        x2_t = 3 * xt - 5 / 2 * x2_l
+        x3_t = b15
+        x4_t = 1
+
+        y0_t = yt
+        y1_t = yt
+        y2_t = (yt + b8) / 2
+        y3_t = dzte + (1 - b15) * np.tan(bte)
+        y4_t = dzte
+
+        x_spline_t = quartic_bezier(x0_t, x1_t, x2_t, x3_t, x4_t)
+        y_spline_t = quartic_bezier(y0_t, y1_t, y2_t, y3_t, y4_t)
+
+        def f(u):
+            u = u * 2  # Extend range to 0-2
+            x_l = x_spline_l(u[u <= 1])
+            y_l = y_spline_l(u[u <= 1])
+            x_t = x_spline_t(u[u > 1] - 1)
+            y_t = y_spline_t(u[u > 1] - 1)
+            x = np.r_[x_l, x_t]
+            y = np.r_[y_l, y_t]
+            return np.c_[x, y]
+
+        return f
+
+    def evaluate(self, s: NDArray):
+        spline = self._calc_spline()
+        curve = spline(np.linspace(0, 1, 200))
+        x, y = curve[:, 0], curve[:, 1]
+        t = np.interp(s, x, y)
+        t *= 2  # Account for half thickness
+        return Thickness(s, t)
+
+    def _eval_spline(self):
+        spline = self._calc_spline()
+        return spline(np.linspace(0, 1, 200))
+
+    def plot_spline(self):
+        curve = self._eval_spline()
+        plt.plot(curve[:, 0], curve[:, 1])
 
 
 # ======================================================================================

@@ -15,7 +15,7 @@ import geometry
 import geometry.surfaces
 from geometry.distributions import double_sided, cluster_left
 from geometry.curves import cumulative_length
-from scipy.interpolate import make_lsq_spline
+from scipy.interpolate import make_lsq_spline, make_smoothing_spline
 
 
 @dataclass
@@ -241,7 +241,7 @@ def fit_section(xy_section):
     xy_camber = find_camber(xy_section)
 
     # Close section
-    xy_camber = np.r_[xy_camber, xy_camber[[0]]]
+    xy_section = np.r_[xy_section, xy_section[[0]]]
 
     xy_camber = extend_le_te(xy_camber, xy_section)
 
@@ -309,10 +309,14 @@ def find_camber(xy_section):
         return np.array(ordered)
 
     verts = order_points(verts)
+    # plt.plot(*verts.T, ".-")
 
     cum_dist = cumulative_length(verts, normalise=True)
     x = np.linspace(0, 1, 100)
-    knots = [*np.zeros(3), *x, *np.ones(3)]
-    smooth_spl = make_lsq_spline(cum_dist, verts, t=knots)
-    xy_camber = smooth_spl(x)
+    # knots = [*np.zeros(3), *x, *np.ones(3)]
+    # smooth_spl = make_lsq_spline(cum_dist, verts, t=knots)
+    # xy_camber = smooth_spl(x)
+    x_smooth_spl = make_smoothing_spline(cum_dist, verts[:, 0], lam=1e-6)
+    y_smooth_spl = make_smoothing_spline(cum_dist, verts[:, 1], lam=1e-6)
+    xy_camber = np.c_[x_smooth_spl(x), y_smooth_spl(x)]
     return xy_camber

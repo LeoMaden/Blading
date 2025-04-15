@@ -140,6 +140,26 @@ def test_BP33ThicknessParam_parameterise():
     plt.show()
 
 
+def test_BP34ThicknessParam_spline():
+    xy_section = load_section()
+    sec = fit_section(xy_section)
+
+    t_param = blade.BP34ThicknessParam(
+        le_radius=0.00178,
+        b8=0.00614,
+        pos_max_t=0.402,
+        max_t=0.0403 * 2,
+        b15=0.0977,
+        te_wedge=np.degrees(0.103) * 2,
+        te_thickness=0,
+    )
+    t_param.plot_spline()
+    # thickness = t_param.evaluate(sec.camber.s)
+
+    # plt.plot(thickness.s, thickness.t)
+    plt.show()
+
+
 def test_ShapeSpaceThicknessParam_parameterise():
     bd = BladeDef.read(
         Path(
@@ -166,11 +186,13 @@ def test_ShapeSpaceThicknessParam_parameterise():
 
 if __name__ == "__main__":
     # test_voroni()
-    test_compare_original_and_fitted_section()
+    # test_compare_original_and_fitted_section()
 
     # test_camber_parameterisation()
 
     # test_BP33ThicknessParam_spline()
     # test_BP33ThicknessParam_parameterise()
+
+    test_BP34ThicknessParam_spline()
 
     # test_ShapeSpaceThicknessParam_parameterise()
