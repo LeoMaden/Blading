@@ -1,0 +1,19 @@
+[build-system]
+build-backend = "setuptools.build_meta"
+requires = ["setuptools >= 80.9.0"]
+
+[project]
+name = "blading"
+version = "0.0.1"
+authors = [
+    { name="Leo Maden", email="lm859@cam.ac.uk" },
+]
+description = "Python code related to blade geometry generation and parameterisation"
+readme = "README.md"
+requires-python = ">= 3.11"
+dependencies = [
+    "numpy >= 2.0.0",
+]
+
+[project.urls]
+Github = "https://github.com/LeoMaden/Blading"
