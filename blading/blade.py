@@ -2,11 +2,20 @@ from dataclasses import dataclass, field
 from pprint import pprint
 from typing import (
     Callable,
+    Generic,
     Self,
+    TypeVar,
 )
 from numpy.typing import NDArray
 import numpy as np
-from .geom import gradient, integrate_from_zero, sum_from_zero, length, cum_length
+from .geom import (
+    gradient,
+    integrate_from_zero,
+    normal,
+    sum_from_zero,
+    length,
+    cum_length,
+)
 
 
 """
@@ -37,6 +46,10 @@ class Polar(NDArray):
         if obj is None:
             return
         self.info = getattr(obj, "info", None)
+
+    @classmethod
+    def empty(cls) -> "Polar":
+        return Polar([])
 
     @classmethod
     def new_2d(cls, r, t) -> "Polar":
@@ -80,6 +93,10 @@ class Cartesian(NDArray):
         self.info = getattr(obj, "info", None)
 
     @classmethod
+    def empty(cls) -> "Cartesian":
+        return Cartesian([])
+
+    @classmethod
     def new_2d(cls, x, y) -> "Cartesian":
         return Cartesian(np.stack((x, y), axis=-1))
 
@@ -110,6 +127,7 @@ class Cartesian(NDArray):
         return Cartesian(self[..., 2])
 
 
+T = TypeVar("T", bound=Polar | Cartesian)
 Coords = Polar | Cartesian
 
 
@@ -126,7 +144,7 @@ def pol_to_cart(pol: Polar) -> Cartesian:
     elif pol.is_3d:
         pass
     else:
-        raise ValueError("`pol` must be 2 or 3D")
+        raise ValueError("`pol` must be 2D or 3D")
 
 
 def cart_to_pol(cart: Cartesian) -> Polar:
@@ -137,28 +155,29 @@ def cart_to_pol(cart: Cartesian) -> Polar:
     elif cart.is_3d:
         pass
     else:
-        raise ValueError("`cart` must be 2 or 3D")
+        raise ValueError("`cart` must be 2D or 3D")
 
 
-# -----
-# Types
-# -----
+# ----------------------------------
+# Camber and thickness distributions
+# ----------------------------------
 
 
 @dataclass
-class Camber:
+class Camber(Generic[T]):
     s: NDArray  # Position along camberline from 0 to 1
     angle: NDArray  # Angle in degrees
+    t: T
     chord: float = 1.0
     offset: NDArray = field(default_factory=lambda: np.zeros(2))
 
     @classmethod
-    def from_coords(cls, xy: NDArray) -> "Camber":
+    def from_coords(cls, xy: T) -> "Camber":
         s = cum_length(xy)
         dydx = gradient(xy)
         angle_rad = np.arctan(dydx)
         angle_deg = np.degrees(angle_rad)
-        return Camber(s, angle_deg)
+        return Camber(s, angle_deg, type(xy).empty())
 
     def __post_init__(self) -> None:
         self._validate()
@@ -181,11 +200,11 @@ class Camber:
         return np.radians(self.angle)
 
     @property
-    def coords(self) -> NDArray:
+    def coords(self) -> T:
         x = integrate_from_zero(np.cos(self.angle_rad), self.s)
         y = integrate_from_zero(np.sin(self.angle_rad), self.s)
         xy = np.c_[x, y]  # This curve should have length 1
-        return (
+        return type(self.t)(
             self.chord * xy + self.offset[np.newaxis, :]
         )  # (1,) * (N, 2) + (1, 2) -> (N, 2)
 
@@ -221,28 +240,43 @@ CamberParamFunc = Callable[[CamberParams], Camber]
 ThicknessParamFunc = Callable[[ThicknessParams], Thickness]
 
 
-def eval_upper(camber: Camber, thickness: Thickness) -> Coords:
-    raise NotImplementedError()
+def eval_upper(camber: Camber[T], thickness: Thickness) -> T:
+    xy = camber.coords
+    norm = normal(xy)
+    t = thickness.abs_thick
+    return type(camber.coords)(
+        xy + 0.5 * norm * t[:, np.newaxis]
+    )  # (N, 2) + (1,) * (N, 2) * (N, 1) -> (N, 2)
 
 
-def eval_lower(camber: Camber, thickness: Thickness) -> Coords:
-    raise NotImplementedError()
+def eval_lower(camber: Camber[T], thickness: Thickness) -> T:
+    xy = camber.coords
+    norm = normal(xy)
+    t = thickness.abs_thick
+    return type(camber.coords)(
+        xy - 0.5 * norm * t[:, np.newaxis]
+    )  # (N, 2) - (1,) * (N, 2) * (N, 1) -> (N, 2)
+
+
+# -------------------------
+# Blade section definitions
+# -------------------------
 
 
 @dataclass(init=False)
-class FlatBlade:
-    coords: Coords
+class FlatSection(Generic[T]):
+    coords: T
 
-    def __init__(self, coords: Coords) -> None:
+    def __init__(self, coords: T) -> None:
         self.coords = coords
 
 
 @dataclass(init=False)
-class SplitBlade:
-    _upper_coords: Coords
-    _lower_coords: Coords
+class SplitSection(Generic[T]):
+    _upper_coords: T
+    _lower_coords: T
 
-    def __init__(self, upper: Coords, lower: Coords) -> None:
+    def __init__(self, upper: T, lower: T) -> None:
         self._upper_coords = upper
         self._lower_coords = lower
 
@@ -256,13 +290,17 @@ class SplitBlade:
 
 
 @dataclass(init=False)
-class DistrBlade(SplitBlade):
+class DistrSection(SplitSection, Generic[T]):
     _camber: Camber
     _thickness: Thickness
+    _type: T
 
-    def __init__(self, camber: Camber, thickness: Thickness) -> None:
+    def __init__(self, camber: Camber[T], thickness: Thickness) -> None:
         self._camber = camber
         self._thickness = thickness
+
+    def __post_init__(self):
+        self._type = self.camber.coords.empty()
 
     @property
     def camber(self) -> Camber:
@@ -273,25 +311,32 @@ class DistrBlade(SplitBlade):
         return self._thickness
 
     @property
-    def upper_coords(self) -> Coords:
-        return eval_upper(self._camber, self._thickness)
+    def upper_coords(self) -> T:
+        upper = eval_upper(self._camber, self._thickness)
+        return type(self.camber.coords)(upper)
 
     @property
-    def lower_coords(self) -> Coords:
-        return eval_lower(self._camber, self._thickness)
+    def lower_coords(self) -> T:
+        lower = eval_lower(self._camber, self._thickness)
+        return type(self.camber.coords)(lower)
 
 
 @dataclass(init=False)
-class ParamCamberBlade(DistrBlade):
+class ParamCamberSection(DistrSection, Generic[T]):
     c_param: CamberParams
     c_func: CamberParamFunc
 
     def __init__(
-        self, c_param: CamberParams, c_func: CamberParamFunc, thickness: Thickness
+        self,
+        c_param: CamberParams,
+        c_func: CamberParamFunc,
+        thickness: Thickness,
+        t: T,
     ) -> None:
         self._thickness = thickness
         self.c_param = c_param
         self.c_func = c_func
+        self._type = t
 
     @property
     def camber(self) -> Camber:
@@ -299,12 +344,15 @@ class ParamCamberBlade(DistrBlade):
 
 
 @dataclass(init=False)
-class ParamThickBlade(DistrBlade):
+class ParamThickSection(DistrSection, Generic[T]):
     t_param: ThicknessParams
     t_func: ThicknessParamFunc
 
     def __init__(
-        self, t_param: ThicknessParams, t_func: ThicknessParamFunc, camber: Camber
+        self,
+        t_param: ThicknessParams,
+        t_func: ThicknessParamFunc,
+        camber: Camber[T],
     ) -> None:
         self._camber = camber
         self.t_param = t_param
@@ -316,26 +364,17 @@ class ParamThickBlade(DistrBlade):
 
 
 @dataclass(init=False)
-class FullParamBlade(ParamThickBlade, ParamCamberBlade):
+class ParamSection(ParamThickSection, ParamCamberSection, Generic[T]):
     def __init__(
         self,
         c_param: CamberParams,
         c_func: CamberParamFunc,
         t_param: ThicknessParams,
         t_func: ThicknessParamFunc,
+        t: T,
     ) -> None:
         self.c_param = c_param
         self.c_func = c_func
         self.t_param = t_param
         self.t_func = t_func
-
-
-coords = Cartesian(np.arange(12).reshape(6, 2))
-coords.x
-b = FlatBlade(coords)
-pprint(b)
-
-upper = Polar(np.arange(12).reshape((4, 3)))
-lower = Polar(np.arange(12)[::-1].reshape((4, 3)))
-b = SplitBlade(upper, lower)
-pprint(b)
+        self._type = t
