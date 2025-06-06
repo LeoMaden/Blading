@@ -1,20 +1,12 @@
 from dataclasses import dataclass, field
-from enum import Enum, auto
 from pprint import pprint
 from typing import (
-    Any,
     Callable,
-    Generic,
-    Protocol,
     Self,
-    TypeVar,
-    cast,
-    get_args,
-    overload,
 )
 from numpy.typing import NDArray
 import numpy as np
-from scipy.integrate import cumulative_trapezoid
+from .geom import gradient, integrate_from_zero, sum_from_zero, length, cum_length
 
 
 """
@@ -37,14 +29,22 @@ Section definitions
 
 
 class Polar(NDArray):
-    def __new__(cls, input_array) -> Self:
-        obj = np.asarray(input_array).view(cls)
+    def __new__(cls, object) -> Self:
+        obj = np.asarray(object).view(cls)
         return obj
 
     def __array_finalize__(self, obj) -> None:
         if obj is None:
             return
         self.info = getattr(obj, "info", None)
+
+    @classmethod
+    def new_2d(cls, r, t) -> "Polar":
+        return Polar(np.stack((r, t), axis=-1))
+
+    @classmethod
+    def new_3d(cls, x, r, t) -> "Polar":
+        return Polar(np.stack((r, t, x), axis=-1))
 
     @property
     def is_2d(self) -> bool:
@@ -70,14 +70,22 @@ class Polar(NDArray):
 
 
 class Cartesian(NDArray):
-    def __new__(cls, input_array) -> Self:
-        obj = np.asarray(input_array).view(cls)
+    def __new__(cls, object) -> Self:
+        obj = np.asarray(object).view(cls)
         return obj
 
     def __array_finalize__(self, obj) -> None:
         if obj is None:
             return
         self.info = getattr(obj, "info", None)
+
+    @classmethod
+    def new_2d(cls, x, y) -> "Cartesian":
+        return Cartesian(np.stack((x, y), axis=-1))
+
+    @classmethod
+    def new_3d(cls, x, y, z) -> "Cartesian":
+        return Cartesian(np.stack((x, y, z), axis=-1))
 
     @property
     def is_2d(self) -> bool:
@@ -111,11 +119,25 @@ Coords = Polar | Cartesian
 
 
 def pol_to_cart(pol: Polar) -> Cartesian:
-    raise NotImplementedError()
+    if pol.is_2d:
+        x = pol.r * np.cos(pol.t)
+        y = pol.r * np.sin(pol.t)
+        return Cartesian.new_2d(x, y)
+    elif pol.is_3d:
+        pass
+    else:
+        raise ValueError("`pol` must be 2 or 3D")
 
 
 def cart_to_pol(cart: Cartesian) -> Polar:
-    raise NotImplementedError()
+    if cart.is_2d:
+        r = np.sqrt(cart.x**2 + cart.y**2)
+        t = np.arctan2(cart.y, cart.x)
+        return Polar.new_2d(r, t)
+    elif cart.is_3d:
+        pass
+    else:
+        raise ValueError("`cart` must be 2 or 3D")
 
 
 # -----
@@ -123,16 +145,20 @@ def cart_to_pol(cart: Cartesian) -> Polar:
 # -----
 
 
-def integrate_from_zero(y, x):
-    return np.r_[0, cumulative_trapezoid(y, x)]
-
-
 @dataclass
 class Camber:
-    s: NDArray
-    angle: NDArray
+    s: NDArray  # Position along camberline from 0 to 1
+    angle: NDArray  # Angle in degrees
     chord: float = 1.0
     offset: NDArray = field(default_factory=lambda: np.zeros(2))
+
+    @classmethod
+    def from_coords(cls, xy: NDArray) -> "Camber":
+        s = cum_length(xy)
+        dydx = gradient(xy)
+        angle_rad = np.arctan(dydx)
+        angle_deg = np.degrees(angle_rad)
+        return Camber(s, angle_deg)
 
     def __post_init__(self) -> None:
         self._validate()
@@ -159,15 +185,33 @@ class Camber:
         x = integrate_from_zero(np.cos(self.angle_rad), self.s)
         y = integrate_from_zero(np.sin(self.angle_rad), self.s)
         xy = np.c_[x, y]  # This curve should have length 1
-        # (1,) * (N, 2) + (1, 2) -> (N, 2)
-        return self.chord * xy + self.offset[np.newaxis, :]
+        return (
+            self.chord * xy + self.offset[np.newaxis, :]
+        )  # (1,) * (N, 2) + (1, 2) -> (N, 2)
 
 
 @dataclass
 class Thickness:
-    s: NDArray
-    rel_thick: NDArray
-    maxt: float = 1.0
+    s: NDArray  # Position along camberline from 0 to 1
+    rel_thick: NDArray  # Thickness as a proportion of maximum thickness
+    maxt: float = 1.0  # Maximum thickness
+
+    def __post_init__(self) -> None:
+        self._validate()
+
+    def _validate(self) -> None:
+        assert self.s.ndim == 1, "`s` must be one-dimensional"
+        assert self.rel_thick.ndim == 1, "`rel_thick` must be one-dimensional"
+        assert (
+            self.s.shape == self.rel_thick.shape
+        ), "`s` and `rel_thick` must have same shape"
+        assert self.s[0] == 0.0, "`s` must start from 0"
+        assert self.s[-1] == 1.0, "`s` must finish at 1"
+        assert self.maxt > 0, "`maxt` must be positive"
+
+    @property
+    def abs_thick(self) -> NDArray:
+        return self.maxt * self.rel_thick
 
 
 CamberParams = dict[str, float]
@@ -287,6 +331,7 @@ class FullParamBlade(ParamThickBlade, ParamCamberBlade):
 
 
 coords = Cartesian(np.arange(12).reshape(6, 2))
+coords.x
 b = FlatBlade(coords)
 pprint(b)
 
