@@ -1,21 +1,16 @@
 from dataclasses import dataclass, field
+from enum import Enum, auto
 from pprint import pprint
 from typing import (
     Callable,
     Generic,
+    Iterable,
     Self,
     TypeVar,
 )
 from numpy.typing import NDArray
 import numpy as np
-from .geom import (
-    gradient,
-    integrate_from_zero,
-    normal,
-    sum_from_zero,
-    length,
-    cum_length,
-)
+from . import geom1d, geom2d
 
 
 """
@@ -52,12 +47,12 @@ class Polar(NDArray):
         return Polar([])
 
     @classmethod
-    def new_2d(cls, r, t) -> "Polar":
-        return Polar(np.stack((r, t), axis=-1))
+    def new_2d(cls, x, t) -> "Polar":
+        return Polar(np.stack((x, t), axis=-1))
 
     @classmethod
     def new_3d(cls, x, r, t) -> "Polar":
-        return Polar(np.stack((r, t, x), axis=-1))
+        return Polar(np.stack((x, t, r), axis=-1))
 
     @property
     def is_2d(self) -> bool:
@@ -69,17 +64,17 @@ class Polar(NDArray):
 
     @property
     def x(self) -> "Polar":
-        if not self.is_3d:
-            raise Exception("Array must be 3D")
-        return Polar(self[..., 2])
-
-    @property
-    def r(self) -> "Polar":
         return Polar(self[..., 0])
 
     @property
     def t(self) -> "Polar":
         return Polar(self[..., 1])
+
+    @property
+    def r(self) -> "Polar":
+        if not self.is_3d:
+            raise Exception("Array must be 3D")
+        return Polar(self[..., 2])
 
 
 class Cartesian(NDArray):
@@ -127,6 +122,33 @@ class Cartesian(NDArray):
         return Cartesian(self[..., 2])
 
 
+class Meridional(NDArray):
+    def __new__(cls, object) -> Self:
+        obj = np.asarray(object).view(cls)
+        return obj
+
+    def __array_finalize__(self, obj) -> None:
+        if obj is None:
+            return
+        self.info = getattr(obj, "info", None)
+
+    @classmethod
+    def empty(cls) -> "Meridional":
+        return Meridional([])
+
+    @classmethod
+    def new(cls, x, r) -> "Meridional":
+        return Meridional(np.stack((x, r), axis=-1))
+
+    @property
+    def x(self) -> "Cartesian":
+        return Cartesian(self[..., 0])
+
+    @property
+    def r(self) -> "Cartesian":
+        return Cartesian(self[..., 1])
+
+
 T = TypeVar("T", bound=Polar | Cartesian)
 Coords = Polar | Cartesian
 
@@ -142,7 +164,7 @@ def pol_to_cart(pol: Polar) -> Cartesian:
         y = pol.r * np.sin(pol.t)
         return Cartesian.new_2d(x, y)
     elif pol.is_3d:
-        pass
+        raise NotImplementedError()
     else:
         raise ValueError("`pol` must be 2D or 3D")
 
@@ -153,7 +175,7 @@ def cart_to_pol(cart: Cartesian) -> Polar:
         t = np.arctan2(cart.y, cart.x)
         return Polar.new_2d(r, t)
     elif cart.is_3d:
-        pass
+        raise NotImplementedError()
     else:
         raise ValueError("`cart` must be 2D or 3D")
 
@@ -173,8 +195,8 @@ class Camber(Generic[T]):
 
     @classmethod
     def from_coords(cls, xy: T) -> "Camber":
-        s = cum_length(xy)
-        dydx = gradient(xy)
+        s = geom2d.cum_length(xy)
+        dydx = geom2d.gradient(xy)
         angle_rad = np.arctan(dydx)
         angle_deg = np.degrees(angle_rad)
         return Camber(s, angle_deg, type(xy).empty())
@@ -201,8 +223,8 @@ class Camber(Generic[T]):
 
     @property
     def coords(self) -> T:
-        x = integrate_from_zero(np.cos(self.angle_rad), self.s)
-        y = integrate_from_zero(np.sin(self.angle_rad), self.s)
+        x = geom1d.integrate_from_zero(np.cos(self.angle_rad), self.s)
+        y = geom1d.integrate_from_zero(np.sin(self.angle_rad), self.s)
         xy = np.c_[x, y]  # This curve should have length 1
         return type(self.t)(
             self.chord * xy + self.offset[np.newaxis, :]
@@ -240,22 +262,28 @@ CamberParamFunc = Callable[[CamberParams], Camber]
 ThicknessParamFunc = Callable[[ThicknessParams], Thickness]
 
 
-def eval_upper(camber: Camber[T], thickness: Thickness) -> T:
+def eval_upper_2d(camber: Camber[T], thickness: Thickness) -> T:
     xy = camber.coords
-    norm = normal(xy)
+    norm = geom2d.normal(xy)
     t = thickness.abs_thick
     return type(camber.coords)(
         xy + 0.5 * norm * t[:, np.newaxis]
     )  # (N, 2) + (1,) * (N, 2) * (N, 1) -> (N, 2)
 
 
-def eval_lower(camber: Camber[T], thickness: Thickness) -> T:
+def eval_lower_2d(camber: Camber[T], thickness: Thickness) -> T:
     xy = camber.coords
-    norm = normal(xy)
+    norm = geom2d.normal(xy)
     t = thickness.abs_thick
     return type(camber.coords)(
         xy - 0.5 * norm * t[:, np.newaxis]
     )  # (N, 2) - (1,) * (N, 2) * (N, 1) -> (N, 2)
+
+
+def eval_upper_3d(
+    cambers: Iterable[Camber[T]], thicknesses: Iterable[Thickness[T]]
+) -> T:
+    raise NotImplementedError()
 
 
 # -------------------------
@@ -281,11 +309,11 @@ class SplitSection(Generic[T]):
         self._lower_coords = lower
 
     @property
-    def upper_coords(self) -> Coords:
+    def upper_coords(self) -> T:
         return self._upper_coords
 
     @property
-    def lower_coords(self) -> Coords:
+    def lower_coords(self) -> T:
         return self._lower_coords
 
 
@@ -312,12 +340,12 @@ class DistrSection(SplitSection, Generic[T]):
 
     @property
     def upper_coords(self) -> T:
-        upper = eval_upper(self._camber, self._thickness)
+        upper = eval_upper_2d(self._camber, self._thickness)
         return type(self.camber.coords)(upper)
 
     @property
     def lower_coords(self) -> T:
-        lower = eval_lower(self._camber, self._thickness)
+        lower = eval_lower_2d(self._camber, self._thickness)
         return type(self.camber.coords)(lower)
 
 
@@ -378,3 +406,60 @@ class ParamSection(ParamThickSection, ParamCamberSection, Generic[T]):
         self.t_param = t_param
         self.t_func = t_func
         self._type = t
+
+
+AnySection = (
+    FlatSection[T]
+    | SplitSection[T]
+    | DistrSection[T]
+    | ParamCamberSection[T]
+    | ParamThickSection[T]
+    | ParamSection[T]
+)
+
+
+# -----------------
+# Blade definitions
+# -----------------
+
+SecT = TypeVar("SecT", bound=AnySection)
+
+
+class CamberNormal(Enum):
+    Line = auto()  # Thickness is added normal to the camberline in 2D
+    Surface = auto()  # Thickness is added normal to the camber surface in 3D
+
+
+@dataclass
+class FlatBlade(Generic[T]):
+    sections: list[FlatSection[T]]
+    streamtubes: list[Meridional]
+
+
+@dataclass
+class SplitBlade(Generic[T]):
+    sections: list[SplitSection[T]]
+    streamtubes: list[Meridional]
+
+    _type: T = field(init=False)
+
+    def __post_init__(self) -> None:
+        self._type = self.sections[0].upper_coords[0]
+
+    @property
+    def upper_coords(self) -> T:
+        upper_list = [s.upper_coords for s in self.sections]
+        upper_arr = np.stack(upper_list, axis=1)
+        return type(self._type)(upper_arr)
+
+    @property
+    def lower_coords(self) -> T:
+        lower_list = [s.lower_coords for s in self.sections]
+        lower_arr = np.stack(lower_list, axis=1)
+        return type(self._type)(lower_arr)
+
+
+@dataclass
+class Blade(Generic[SecT]):
+    sections: list[SecT]
+    streamtubes: list[Meridional]
