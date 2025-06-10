@@ -14,13 +14,56 @@ from . import geom1d, geom2d
 
 
 """
-Section definitions
-- Just a set of coordinates around the section
-- Coordinates of upper and lower surfaces
-- Non-dimensional camber and thickness distributions + chord
-- Parameterised camber, spline thickness + chord
-- Parameterised thickness, spline camber + chord
-- Parameterised thickness & camber + chord
+Coords used to describe sections and blades
+- 2D Cartesian section (x, y)
+- 2D Polar section (x, rt)
+- 3D Cartesian section (x, y, z)
+- 3D Polar section (x, r, rt)
+
+Coords for camber line
+- 2D Cartesian camber (x, y)
+- 2D Polar camber (x, rt)
+- 3D Cartesian camber (x, y, z)
+- 3D Polar camber (x, r, rt)
+
+Camber line in 3D lives on a streamsurface defined by (x, r) coords.
+Can convert from 2D to 3D camber line by providing streamsurface coords.
+Cannot in general get streamsurface coords from 3D camber line as streamsurface
+    usually extends beyond blade leading and trailing edges
+
+Obtaining blade section from camber line
+- 2D: add thickness normal to camber line in (x, y) or (x, rt) space
+- 3D: 
+    - Project section into (x, y) or (x, rt) plane and do 2D method
+    - Use normal to camber surface
+
+# Types
+
+class 2D
+class 3D
+
+class Cartesian[T] where T is [2D or 3D]
+class Polar[T] where T is [2D or 3D]
+class Meridional
+
+class Camber[T] where T is[Cartesian or Polar]
+class Thickness
+
+sections...
+- Just a set of coordinates around the section (flat)
+- Coordinates of upper and lower surfaces (split)
+- Camber and thickness distributions (distr)
+- Parameterised camber, spline thickness (pc)
+- Parameterised thickness, spline camber (pt)
+- Parameterised thickness & camber (p)
+
+blades...
+- List of 2D or 3D flat sections + streamsurfaces
+- List of 2D split sections + streamsurfaces
+- List of 3D split sections 
+
+
+blades...
 
 
 
