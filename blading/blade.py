@@ -1,12 +1,9 @@
-from geometry.surfaces import plot_2d_surface
 from dataclasses import dataclass, field
-from typing import Callable, Generic, Mapping, MutableMapping, Optional, Self, TypeVar
+from typing import Callable, Generic, MutableMapping, Optional, TypeVar
 from geometry.curves import PlaneCurve
-from geometry.grid import Grid2D
 from numpy.typing import NDArray
 import numpy as np
 from scipy.interpolate import griddata
-from scipy.optimize import minimize
 
 
 @dataclass(frozen=True)
@@ -52,6 +49,17 @@ class Section:
         return normal * thickness
 
 
+@dataclass(frozen=True)
+class FlatSection:
+    curve: PlaneCurve
+    stream_line: Optional[PlaneCurve]
+
+
+@dataclass(frozen=True)
+class FlatBlade:
+    sections: list[FlatSection]
+
+
 T = TypeVar("T", bound=MutableMapping)
 
 
@@ -70,7 +78,7 @@ class PSection(Generic[T]):
         return PSection(updated, self.create)
 
 
-@dataclass
+@dataclass(frozen=True)
 class PBlade:
     sections: list[PSection]
 
@@ -122,3 +130,7 @@ class Annulus:
 
         object.__setattr__(self, "_interp_physical", grid_coords.reshape((-1, 2)))
         object.__setattr__(self, "_interp_stream", stream_grid.reshape((-1, 2)))
+
+
+def approximate_camber_line(section: FlatSection) -> Section:
+    pass
