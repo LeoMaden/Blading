@@ -133,4 +133,4 @@ class Annulus:
 
 
 def approximate_camber_line(section: FlatSection) -> Section:
-    pass
+    raise NotImplementedError()
