@@ -165,10 +165,6 @@ def approx_camber_line(
     camber_guess = (upper + lower) / 2
     thickness_guess = (upper - lower).norm()
 
-    def error(c_new, c_old):
-        diff = (c_new - c_old).norm()
-        return np.sum(diff)
-
     camber_iters: list[CamberIteration] = []
     while True:
         # plot_plane_curve(camber_guess, ax)
@@ -196,7 +192,7 @@ def approx_camber_line(
     t_new_TE = t[-2] + (t[-1] - t[-2]) * spacing_TE
 
     t_new = np.r_[t_new_LE, t[2:-2], t_new_TE]
-    camber_new = camber_new.interpolate(t_new)
+    camber_new = camber_new.interpolate(t_new, k=2)
 
     # Ensure thickness matches camber
     thickness_new = np.r_[
