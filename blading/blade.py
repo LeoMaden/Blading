@@ -80,7 +80,3 @@ class PSection(Generic[T]):
 @dataclass(frozen=True)
 class PBlade:
     sections: list[PSection]
-
-
-def approximate_camber_line(section: FlatSection) -> Section:
-    raise NotImplementedError()
