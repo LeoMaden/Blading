@@ -1,12 +1,13 @@
 from pathlib import Path
 from hydra.blade_def import BladeDef
-from cfd_code.hydra_blading import convert_blade_def, approx_camber_line
+from cfd.hydra_blading import convert_blade_def
+from blading.approx import approx_camber_line
 import matplotlib.pyplot as plt
 from geometry.curves import plot_plane_curve
 
 
 def main() -> None:
-    file = Path("rows/I01R/n100/Blade_Definition")
+    file = Path("data/baseline/I01R/n100/Blade_Definition")
     blade_def = BladeDef.read(file)
 
     blade = convert_blade_def(blade_def)
