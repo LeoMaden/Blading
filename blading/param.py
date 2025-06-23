@@ -4,6 +4,7 @@ from geometry.curves import PlaneCurve
 from numpy.typing import NDArray, ArrayLike
 import numpy as np
 from scipy.interpolate import make_interp_spline, BSpline
+from blading import shape_space
 
 
 CamberDistribution = Callable[[NDArray], NDArray]
@@ -84,3 +85,59 @@ class TransonicCamber:
         self.t_star = t_star
         self.coefs = coefs
         return BSpline(knots, coefs, k=3)
+
+
+@dataclass
+class ContinuousCurvThickness:
+    radius_LE: float
+    thickness_TE: float
+    wedge_angle: float
+    max_thickness: float
+    pos_max_t: float
+    curv_max_t: float
+    pos_knot: float
+
+    def make(self):
+        knots = [0, 0, 0, 0, self.pos_knot, 1, 1, 1, 1]
+        m = len(knots) - 1
+        p = 3
+        n = m - p - 1
+
+        basis: list = [0] * (n + 1)
+        for i in range(n + 1):  # number of basis functions
+            coef = np.astype(np.arange(n + 1) == i, np.floating)
+            basis[i] = BSpline(knots, coef, p)
+
+        # Constraints on function in shape-space.
+        x0 = 0
+        y0 = np.sqrt(2 * self.radius_LE)
+
+        x1 = self.pos_max_t
+        y1 = shape_space.value(x1, self.max_thickness, self.thickness_TE)
+        dy1 = shape_space.deriv1(x1, self.max_thickness, self.thickness_TE, 0)
+        ddy1 = shape_space.deriv2(
+            x1, self.max_thickness, self.thickness_TE, 0, self.curv_max_t
+        )
+
+        x2 = 1
+        y2 = np.tan(self.wedge_angle) + self.thickness_TE
+
+        # Create system of equations
+        A = np.zeros((n + 1, n + 1))
+        A[0, :] = [b(x0) for b in basis]
+        A[1, :] = [b(x1) for b in basis]
+        A[2, :] = [b.derivative()(x1) for b in basis]
+        A[3, :] = [b.derivative().derivative()(x1) for b in basis]
+        A[4, :] = [b(x2) for b in basis]
+
+        b = np.r_[y0, y1, dy1, ddy1, y2]
+
+        c = np.linalg.solve(A, b)
+
+        spl = BSpline(knots, c, p)
+
+        def eval(x):
+            ss = spl(x)
+            return shape_space.inverse(x, ss, self.thickness_TE)
+
+        return eval, spl
