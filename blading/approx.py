@@ -20,13 +20,15 @@ class CamberIteration:
 
 @dataclass(frozen=True)
 class ApproxCamberResult:
+    success: bool
     mask_LE: Mask
     mask_TE: Mask
     upper_split: PlaneCurve
     lower_split: PlaneCurve
     camber_iterations: list[CamberIteration]
     n_iter: int
-    section: Section
+    section: Section | None
+    err_msg: str = ""
 
 
 def find_LE_TE(
@@ -167,13 +169,26 @@ def approx_camber_line(
 
     camber_iters: list[CamberIteration] = []
     while True:
-        # plot_plane_curve(camber_guess, ax)
-        iter = improve_camber(
-            camber_guess,
-            thickness_guess,
-            section,
-            relax_factor,
-        )
+        try:
+            iter = improve_camber(
+                camber_guess,
+                thickness_guess,
+                section,
+                relax_factor,
+            )
+        except Exception as e:
+            return ApproxCamberResult(
+                success=False,
+                mask_LE=mask_LE,
+                mask_TE=mask_TE,
+                upper_split=upper,
+                lower_split=lower,
+                camber_iterations=camber_iters,
+                n_iter=len(camber_iters),
+                section=None,
+                err_msg=str(e),
+            )
+
         camber_iters.append(iter)
         if iter.delta <= tol:
             break
@@ -206,6 +221,7 @@ def approx_camber_line(
     section_new = Section(camber_new, thickness_new, section.stream_line)
 
     return ApproxCamberResult(
+        success=True,
         mask_LE=mask_LE,
         mask_TE=mask_TE,
         upper_split=upper,
