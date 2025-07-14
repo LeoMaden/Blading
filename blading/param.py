@@ -141,3 +141,57 @@ class ContinuousCurvThickness:
             return shape_space.inverse(x, ss, self.thickness_TE)
 
         return eval, spl
+
+
+@dataclass
+class TransonicThickness:
+    coef: NDArray
+    pos_max_t: float
+    max_thickness: float
+    thickness_TE: float
+    wedge_angle: float
+    radius_LE: float
+
+    def make(self):
+        a, b = np.sort(self.coef[0:2])
+        knots = [0, 0, 0, 0, a, b, 1, 1, 1, 1]
+        m = len(knots) - 1
+        p = 3
+        n = m - p - 1
+
+        basis: list = [0] * (n + 1)
+        for i in range(n + 1):  # number of basis functions
+            coef = np.astype(np.arange(n + 1) == i, np.floating)
+            basis[i] = BSpline(knots, coef, p)
+
+        # Constraints on function in shape-space.
+        x0 = 0
+        y0 = np.sqrt(2 * self.radius_LE)
+
+        x1 = self.pos_max_t
+        y1 = shape_space.value(x1, self.max_thickness, self.thickness_TE)
+        dy1 = shape_space.deriv1(x1, self.max_thickness, self.thickness_TE, 0)
+
+        x2 = 1
+        y2 = np.tan(self.wedge_angle) + self.thickness_TE
+
+        # Create system of equations
+        A = np.zeros((n + 1, n + 1))
+        A[0, :] = [b(x0) for b in basis]
+        A[1, :] = [b(x1) for b in basis]
+        A[2, :] = [b.derivative()(x1) for b in basis]
+        A[3, :] = [b(x2) for b in basis]
+        A[4, :] = [b(self.coef[2]) for b in basis]
+        A[5, :] = [b.derivative().derivative()(self.coef[3]) for b in basis]
+
+        b = np.r_[y0, y1, dy1, y2, self.coef[4], self.coef[5]]
+
+        c = np.linalg.solve(A, b)
+
+        spl = BSpline(knots, c, p)
+
+        def eval(x):
+            ss = spl(x)
+            return shape_space.inverse(x, ss, self.thickness_TE)
+
+        return eval, spl

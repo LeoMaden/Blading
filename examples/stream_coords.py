@@ -1,8 +1,8 @@
 from pathlib import Path
 from hydra.blade_def import BladeDef
 from geometry.curves import PlaneCurve, plot_plane_curve
-from blading.blade import Annulus
 import matplotlib.pyplot as plt
+from blading.annulus import Annulus
 
 
 def main() -> None:

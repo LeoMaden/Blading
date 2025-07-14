@@ -1,6 +1,6 @@
 import matplotlib.pyplot as plt
 from typing import Mapping
-from blading.blade import Section, PSection
+from blading.section import Section, PSection
 import numpy as np
 from geometry.curves import PlaneCurve, plot_plane_curve
 

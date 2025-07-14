@@ -2,7 +2,7 @@ from numpy.typing import NDArray
 import numpy as np
 from geometry.curves import PlaneCurve
 from dataclasses import dataclass
-from .blade import Section, FlatSection
+from .section import Section, FlatSection
 
 
 Mask = NDArray[np.bool]

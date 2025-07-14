@@ -20,7 +20,7 @@ from blading import misc
 
 import geometry
 import geometry.surfaces
-from . import shapespace
+from . import shape_space
 
 from .misc import calc_te_t_param
 from circle_fit import taubinSVD
@@ -261,7 +261,7 @@ class ShapeSpaceThicknessParam:
         ss2 = self.p2(xs[i])
 
         ss = np.r_[ss1, ss2]
-        t = shapespace.inverse(s, ss, self.t_te)
+        t = shape_space.inverse(s, ss, self.t_te)
 
         # Round trailing edge
         a = np.arctan(0.5 * np.tan(np.radians(self.angle_te)))
@@ -283,9 +283,9 @@ class ShapeSpaceThicknessParam:
 
     def _construct(self):
         ss_le = np.sqrt(2 * self.rad_le)
-        ss_mt = shapespace.value(self.x_max_t, self.max_t, self.t_te)
-        ss1_mt = shapespace.deriv1(self.x_max_t, self.max_t, self.t_te, 0)
-        ss2_mt = shapespace.deriv2(
+        ss_mt = shape_space.value(self.x_max_t, self.max_t, self.t_te)
+        ss1_mt = shape_space.deriv1(self.x_max_t, self.max_t, self.t_te, 0)
+        ss2_mt = shape_space.deriv2(
             self.x_max_t, self.max_t, self.t_te, 0, -1 / self.rad_max_t
         )
         ss_te = np.tan(np.radians(self.angle_te)) + self.t_te
@@ -347,7 +347,7 @@ class ShapeSpaceThicknessParam:
         t_te, angle_te = calc_te_t_param(thickness)
 
         # State space
-        ss = shapespace.value(thickness.s, thickness.t, t_te)
+        ss = shape_space.value(thickness.s, thickness.t, t_te)
 
         # Curvature at max thickness
         d2tdx2 = np.gradient(dtdx, thickness.s)
@@ -381,8 +381,8 @@ class ShapeSpaceThicknessParam:
         def fun(x):
             t_param = create(x)
             thickness_param = t_param.evaluate(thickness.s)
-            ss = shapespace.value(thickness.s, thickness.t, t_te)
-            ss_param = shapespace.value(thickness.s, thickness_param.t, t_te)
+            ss = shape_space.value(thickness.s, thickness.t, t_te)
+            ss_param = shape_space.value(thickness.s, thickness_param.t, t_te)
             front = (thickness.s < 0.5) & (thickness.s > 0.05)
 
             return ss[front] - ss_param[front]
