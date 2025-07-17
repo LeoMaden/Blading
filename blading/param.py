@@ -272,7 +272,7 @@ class ContinuousCurvThickness:
 
 
 @dataclass
-class MeasuredParams:
+class Params:
     radius_LE: float
     s_max_t: float
     max_t: float
@@ -322,7 +322,7 @@ def measure_thickness(sec: Section, stretch_join: float):
     ss_grad_spline = make_interp_spline(s, ss_grad)
     ss_grad_TE = ss_grad_spline(1)
 
-    return MeasuredParams(
+    return Params(
         radius_LE=radius_LE,
         s_max_t=s_max_t,
         max_t=max_t,
@@ -358,27 +358,23 @@ class Result:
     ss_join: float
 
 
-def test_thickness(sec: Section, fit_params: FitParams):
-    s = sec.normalised_arc_length
-
-    stretch_join = fit_params.stretch_join
-    stretch_amount = fit_params.stretch_amount
-
-    measured = measure_thickness(sec, stretch_join)
+def create_thickness(p: Params, p_fit: FitParams):
+    stretch_join = p_fit.stretch_join
+    stretch_amount = p_fit.stretch_amount
 
     # Leading edge.
     s_LE = -stretch_amount
-    ss_LE = np.sqrt(measured.radius_LE)
+    ss_LE = np.sqrt(p.radius_LE)
 
     # Trailing edge.
     s_TE = 1
-    ss_TE = np.tan(measured.wedge_TE) + measured.thickness_TE
+    ss_TE = np.tan(p.wedge_TE) + p.thickness_TE
 
     # Maximum thickness.
-    s_max_t = measured.s_max_t
-    max_t = measured.max_t
-    t_TE = measured.thickness_TE
-    curv_max_t = measured.curv_max_t
+    s_max_t = p.s_max_t
+    max_t = p.max_t
+    t_TE = p.thickness_TE
+    curv_max_t = p.curv_max_t
     ss_max_t = shape_space.value(s_max_t, max_t, t_TE)
     ss_grad_max_t = shape_space.deriv1(s_max_t, max_t, t_TE, 0)
     ss_curv_max_t = shape_space.deriv2(s_max_t, max_t, t_TE, 0, curv_max_t)
@@ -388,7 +384,7 @@ def test_thickness(sec: Section, fit_params: FitParams):
 
     # Calculate knot positions based on position of maximum thickness and stretch.
     s_transform = make_interp_spline([0, 1, 2], [s_LE, s_max_t, s_TE], k=1)
-    s_knots = s_transform(np.asarray(fit_params.knot_positions))
+    s_knots = s_transform(np.asarray(p_fit.knot_positions))
 
     # Calculate knot vector.
     knots = np.r_[np.repeat(s_LE, 4), s_knots, np.repeat(s_TE, 4)]
@@ -413,9 +409,9 @@ def test_thickness(sec: Section, fit_params: FitParams):
         (value_at(s_max_t), ss_max_t),
         (grad_at(s_max_t), ss_grad_max_t),
         (curv_at(s_max_t), ss_curv_max_t),
-        (value_at(stretch_join), measured.ss_stretch_join),
-        (grad_at(s_TE), measured.ss_grad_TE),
-        (grad_at(s_LE), fit_params.ss_grad_LE),
+        (value_at(stretch_join), p.ss_stretch_join),
+        (grad_at(s_TE), p.ss_grad_TE),
+        (grad_at(s_LE), p_fit.ss_grad_LE),
     ]
     assert len(constraints) == n_coef
 
@@ -429,7 +425,7 @@ def test_thickness(sec: Section, fit_params: FitParams):
     return Result(
         spline=spline,
         stretch=stretch,
-        ss=measured.ss,
+        ss=p.ss,
         t_TE=t_TE,
         s_LE=s_LE,
         ss_LE=ss_LE,
@@ -437,5 +433,5 @@ def test_thickness(sec: Section, fit_params: FitParams):
         ss_TE=ss_TE,
         s_max_t=s_max_t,
         ss_max_t=ss_max_t,
-        ss_join=measured.ss_stretch_join,
+        ss_join=p.ss_stretch_join,
     )
