@@ -271,83 +271,129 @@ class ContinuousCurvThickness:
 ###################################################
 
 
-def test_thickness(sec: Section):
+@dataclass
+class MeasuredParams:
+    radius_LE: float
+    s_max_t: float
+    max_t: float
+    curv_max_t: float
+    thickness_TE: float
+    wedge_TE: float
+    ss_stretch_join: float
+    ss_grad_TE: float
+    ss: NDArray
+
+
+def measure_thickness(sec: Section, stretch_join: float):
     s = sec.normalised_arc_length
+
+    ##### Thickness #####
     t = sec.thickness
 
-    stretch_amount = 0.1
-    stretch_join = 0.15
-    s_stretch = stretch_func(stretch_amount, stretch_join)(s)
+    # Find point of maximum thickness.
+    t_spline = make_interp_spline(s, t)
+    (s_max_t,) = fmin(lambda s: -t_spline(s), x0=0.5)  # type: ignore
+    max_t = t_spline(s_max_t)
 
-    # Maximum thickness.
-    t_spl = make_interp_spline(s, t)
-    func = lambda s: -t_spl(s)
-    (s_max_t,) = fmin(func, x0=0.5)  # type: ignore
-    max_t = t_spl(s_max_t)
-
+    # Trailing edge thickness (assuming blunt TE).
     t_TE = t[-1]
 
-    # Second derivative of thickness.
-    t_curv = np.gradient(np.gradient(t, s), s)
-    t_curv_spl = make_interp_spline(s, t_curv)
-    t_curv_max_t = t_curv_spl(s_max_t)
+    # Wedge angle at TE.
+    grad = np.gradient(t, s)
+    wedge_TE = -np.arctan(grad[-1])
 
-    # Constraints.
-    s_LE = -stretch_amount
-    s_TE = 1
+    # Thickness curvature at maximum thickness.
+    curv = np.gradient(grad, s)
+    curv_spline = make_interp_spline(s, curv)
+    curv_max_t = curv_spline(s_max_t)
 
-    # LE radius.
+    # Leading edge radius.
     LE_circle = fit_LE_circle(sec)
-    ss_LE = np.sqrt(2 * LE_circle.radius / 2)
+    radius_LE = LE_circle.radius
 
-    # Calculate shape space values, extrapolating LE and TE singularities.
-    ss = shape_space.value(s[:-1], t[:-1], t_TE)
-    ss[0] = ss_LE
-    ss_spl = make_interp_spline(s[:-1], ss, bc_type="natural")
-    ss = ss_spl(s)
+    ##### Shape space #####
 
-    ss_stretch_spl = make_interp_spline(s_stretch, ss)
+    # Extrapolate LE and TE singularities.
+    ss = shape_space.value(s, t, t[-1])
+    ss_spline = make_interp_spline(s[1:-1], ss[1:-1], k=1)
+    ss = ss_spline(s)
+    ss_stretch_join = ss_spline(stretch_join)
+    ss_grad = np.gradient(ss_spline(s), s)
+    ss_grad_spline = make_interp_spline(s, ss_grad)
+    ss_grad_TE = ss_grad_spline(1)
 
-    ss_grad = np.gradient(ss, s)
-    ss_grad_spl = make_interp_spline(s, ss_grad)
-    ss_grad_LE = -0.5
+    return MeasuredParams(
+        radius_LE=radius_LE,
+        s_max_t=s_max_t,
+        max_t=max_t,
+        curv_max_t=curv_max_t,
+        thickness_TE=t_TE,
+        wedge_TE=wedge_TE,
+        ss_stretch_join=ss_stretch_join,
+        ss_grad_TE=ss_grad_TE,
+        ss=ss,
+    )
 
-    ss_grad_stretch_spl = make_interp_spline(s_stretch, ss_grad)
-    # ss_grad_p = ss_grad_stretch_spl(-0.25)
 
-    ss_TE = ss[-1]
-    ss_stretch_join = ss_spl(stretch_join)
+@dataclass
+class FitParams:
+    stretch_amount: float
+    stretch_join: float
+    knot_positions: tuple[float, float, float, float]
+    ss_grad_LE: float
 
-    ss_grad_TE = ss_grad_spl(s_TE)
-    ss_grad_stretch_join = ss_grad_spl(stretch_join)
 
-    ###### MOVE MAX T AS TEST #######
-    # s_max_t -= 0.1
+@dataclass
+class Result:
+    spline: BSpline
+    stretch: Callable[[NDArray], NDArray]
+    ss: NDArray
+    t_TE: float
+    s_LE: float
+    ss_LE: float
+    s_TE: float
+    ss_TE: float
+    s_max_t: float
+    ss_max_t: float
+    ss_join: float
 
+
+def test_thickness(sec: Section, fit_params: FitParams):
+    s = sec.normalised_arc_length
+
+    stretch_join = fit_params.stretch_join
+    stretch_amount = fit_params.stretch_amount
+
+    measured = measure_thickness(sec, stretch_join)
+
+    # Leading edge.
+    s_LE = -stretch_amount
+    ss_LE = np.sqrt(measured.radius_LE)
+
+    # Trailing edge.
+    s_TE = 1
+    ss_TE = np.tan(measured.wedge_TE) + measured.thickness_TE
+
+    # Maximum thickness.
+    s_max_t = measured.s_max_t
+    max_t = measured.max_t
+    t_TE = measured.thickness_TE
+    curv_max_t = measured.curv_max_t
     ss_max_t = shape_space.value(s_max_t, max_t, t_TE)
     ss_grad_max_t = shape_space.deriv1(s_max_t, max_t, t_TE, 0)
-    ss_curv_max_t = shape_space.deriv2(s_max_t, max_t, t_TE, 0, t_curv_max_t)
+    ss_curv_max_t = shape_space.deriv2(s_max_t, max_t, t_TE, 0, curv_max_t)
 
-    wedge_angle = np.arctan(ss_TE - t_TE)
+    # Calculate stretching function.
+    stretch = stretch_func(stretch_amount, stretch_join)
 
-    ##################################################
+    # Calculate knot positions based on position of maximum thickness and stretch.
+    s_transform = make_interp_spline([0, 1, 2], [s_LE, s_max_t, s_TE], k=1)
+    s_knots = s_transform(np.asarray(fit_params.knot_positions))
 
-    a = s_LE
-    b = s_TE
-
-    # Create uniform, clamped knot vector.
-    n_coef = 8
+    # Calculate knot vector.
+    knots = np.r_[np.repeat(s_LE, 4), s_knots, np.repeat(s_TE, 4)]
     degree = 3
-    n_knots = n_coef + degree + 1
-    knots = np.r_[
-        np.repeat(a, 4),
-        a + 0.05 * (s_max_t - a),
-        a + 0.65 * (s_max_t - a),
-        s_max_t,
-        s_max_t + 0.2 * (b - s_max_t),
-        np.repeat(b, 4),
-    ]
-    assert len(knots) == n_knots
+    n_coef = len(knots) - degree - 1
 
     # Calculate BSpline basis functions.
     basis: list[BSpline] = []
@@ -365,46 +411,31 @@ def test_thickness(sec: Section):
         (value_at(s_LE), ss_LE),
         (value_at(s_TE), ss_TE),
         (value_at(s_max_t), ss_max_t),
-        (value_at(stretch_join), ss_stretch_join),
         (grad_at(s_max_t), ss_grad_max_t),
-        (grad_at(s_TE), ss_grad_TE),
-        # (value_at(s_1pct), ss_1pct),
         (curv_at(s_max_t), ss_curv_max_t),
-        (grad_at(s_LE), ss_grad_LE),
+        (value_at(stretch_join), measured.ss_stretch_join),
+        (grad_at(s_TE), measured.ss_grad_TE),
+        (grad_at(s_LE), fit_params.ss_grad_LE),
     ]
     assert len(constraints) == n_coef
 
-    # Create and solve for coefficients.
+    # Create matrices and solve for coefficients.
     A = np.c_[*[c[0] for c in constraints]].T
     b = np.r_[*[c[1] for c in constraints]]
     coefs = np.linalg.solve(A, b)
 
     spline = BSpline(knots, coefs, degree)
-    ss_fit = spline(s_stretch)
 
-    # Calculate avg. knot vector.
-    knot_avg = np.array([spline.t[i : i + degree + 1].mean() for i in range(n_coef)])
-
-    t_fit = shape_space.inverse(s, ss_fit, t_TE)
-    sec_fit = Section(sec.camber_line, t_fit, sec.stream_line)
-
-    # Plotting
-    plt.figure()
-    plt.title("Shape space")
-    plt.plot(s_stretch, ss, "k-")
-    plt.plot(s_stretch, ss_fit, "r--")
-    plt.plot(s_LE, ss_LE, "r.")
-    plt.plot(s_TE, ss_TE, "r.")
-    plt.plot(s_max_t, ss_max_t, "r.")
-    plt.plot(knot_avg, coefs, "bx")
-
-    fig, ax = plt.subplots()
-    plot_plane_curve(sec.upper_and_lower(), ax, "k-")
-    plot_plane_curve(sec_fit.upper_and_lower(), ax, "r--")
-    plt.axis("equal")
-
-    fig, ax = plt.subplots()
-    sec.plot_thickness(ax, "k-")
-    sec_fit.plot_thickness(ax, "r--")
-
-    plt.show()
+    return Result(
+        spline=spline,
+        stretch=stretch,
+        ss=measured.ss,
+        t_TE=t_TE,
+        s_LE=s_LE,
+        ss_LE=ss_LE,
+        s_TE=s_TE,
+        ss_TE=ss_TE,
+        s_max_t=s_max_t,
+        ss_max_t=ss_max_t,
+        ss_join=measured.ss_stretch_join,
+    )

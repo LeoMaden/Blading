@@ -1,3 +1,5 @@
+import matplotlib.pyplot as plt
+from geometry.curves import plot_plane_curve
 from numpy.typing import NDArray
 import numpy as np
 from geometry.curves import PlaneCurve
@@ -29,6 +31,17 @@ class ApproxCamberResult:
     n_iter: int
     section: Section | None
     err_msg: str = ""
+
+    def plot(self, orig_sec: FlatSection):
+        fig, ax = plt.subplots()
+        plot_plane_curve(self.upper_split, ax)
+        plot_plane_curve(self.lower_split, ax)
+        plot_plane_curve(orig_sec.curve, ax, "k:")
+        plot_plane_curve(orig_sec.curve[self.mask_LE], ax, "r.")
+        plot_plane_curve(orig_sec.curve[self.mask_TE], ax, "b.")
+        plot_plane_curve(self.camber_iterations[-1].camber, ax, "m.-")
+        plt.axis("equal")
+        plt.show()
 
 
 def find_LE_TE(
