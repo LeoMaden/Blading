@@ -9,6 +9,7 @@ from circle_fit import taubinSVD
 from numpy.polynomial import Polynomial
 from typing import Callable
 from scipy.optimize import minimize, fmin
+from geometry.curves import plot_plane_curve
 
 
 @dataclass
@@ -136,6 +137,8 @@ class FitParams:
 class Result:
     spline: BSpline
     stretch: Callable[[NDArray], NDArray]
+    p: Params
+    p_fit: FitParams
     ss: NDArray
     t_TE: float
     s_LE: float
@@ -214,6 +217,8 @@ def create_thickness(p: Params, p_fit: FitParams):
     return Result(
         spline=spline,
         stretch=stretch,
+        p=p,
+        p_fit=p_fit,
         ss=p.ss,
         t_TE=t_TE,
         s_LE=s_LE,
@@ -276,3 +281,41 @@ def fit_thickness(sec: Section) -> tuple[Params, FitParams]:
 
     x = opt.x
     return create_params(x)
+
+
+def plot_fitted_thickness(sec: Section, res: Result):
+    s = sec.normalised_arc_length
+    s_stretch = res.stretch(s)
+    ss_fit = res.spline(s_stretch)
+
+    # Calculate avg. knot vector.
+    degree = res.spline.k
+    n_coef = len(res.spline.c)
+    knot_avg = np.array(
+        [res.spline.t[i : i + degree + 1].mean() for i in range(n_coef)]
+    )
+
+    t_fit = shape_space.inverse(s, ss_fit, res.t_TE)
+    sec_fit = Section(sec.camber_line, t_fit, sec.stream_line)
+
+    # Plotting
+    plt.figure()
+    plt.title("Shape space")
+    plt.plot(s_stretch, res.ss, "k-")
+    plt.plot(s_stretch, ss_fit, "r--")
+    plt.plot(res.s_LE, res.ss_LE, "r.")
+    plt.plot(res.s_TE, res.ss_TE, "r.")
+    plt.plot(res.s_max_t, res.ss_max_t, "r.")
+    plt.plot(res.p_fit.stretch_join, res.ss_join, "r.")
+    plt.plot(knot_avg, res.spline.c, "bx")
+
+    fig, ax = plt.subplots()
+    plot_plane_curve(sec.upper_and_lower(), ax, "k.-")
+    plot_plane_curve(sec_fit.upper_and_lower(), ax, "r--")
+    plt.axis("equal")
+
+    fig, ax = plt.subplots()
+    sec.plot_thickness(ax, "k-")
+    sec_fit.plot_thickness(ax, "r--")
+
+    plt.show()
