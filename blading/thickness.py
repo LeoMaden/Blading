@@ -31,6 +31,12 @@ class LECircle:
         ax.plot(*self.fit_points.T, "b.", label="LE points")
         ax.legend()
         plt.axis("equal")
+        
+        # Zoom into leading edge region
+        x_range = self.radius * 3
+        y_range = self.radius * 3
+        ax.set_xlim(self.xc - x_range, self.xc + x_range)
+        ax.set_ylim(self.yc - y_range, self.yc + y_range)
 
 
 def fit_LE_circle(sec: Section, num_LE: int = 11):
@@ -119,6 +125,14 @@ class ThicknessParams:
         )
 
 
+def compute_shape_space_spline(s, t):
+    """Compute spline in shape space for given arc length and thickness,
+    extrapolating singularities at LE and TE."""
+    ss = shape_space.value(s, t, t[-1])
+    ss_spline = make_interp_spline(s[1:-1], ss[1:-1], k=1)
+    return ss_spline
+
+
 def measure_thickness(sec: Section, stretch_join: float) -> MeasuredThicknessParams:
     """Measure thickness parameters that can be directly extracted from a blade section."""
     s = sec.normalised_arc_length
@@ -150,8 +164,7 @@ def measure_thickness(sec: Section, stretch_join: float) -> MeasuredThicknessPar
     ##### Shape space #####
 
     # Extrapolate LE and TE singularities.
-    ss = shape_space.value(s, t, t[-1])
-    ss_spline = make_interp_spline(s[1:-1], ss[1:-1], k=1)
+    ss_spline = compute_shape_space_spline(s, t)
     ss = ss_spline(s)
     ss_stretch_join = ss_spline(stretch_join)
     ss_grad = np.gradient(ss, s)
@@ -429,33 +442,64 @@ def fit_thickness(sec: Section, plot_intermediate: bool = False) -> ThicknessRes
         return create_thickness(params)
 
     # Function to calculate error between fit and actual in shape space.
+    s_sec = sec.normalised_arc_length
+    t_sec = sec.thickness
+    # Calculate original shape space values for comparison
+    ss = compute_shape_space_spline(s_sec, t_sec)(s_sec)
+
     def err(x):
         res = create(x)
-        s = sec.normalised_arc_length
-        t = sec.thickness
-        # Calculate original shape space values for comparison
-        ss = shape_space.value(s, t, t[-1])
-        s_stretch = res.stretch(s)
+        s_stretch = res.stretch(s_sec)
         ss_fit = res.spline(s_stretch)
-        return np.trapezoid((ss - ss_fit) ** 2, s)
+        return np.trapezoid((ss - ss_fit) ** 2, s_sec)
+
+    def gt_zero(constraint_func):
+        """Helper function to create scipy constraint dict from lambda"""
+        return {"type": "ineq", "fun": constraint_func}
 
     # Constraints on optimisation variables.
     constraints = [
-        {"type": "ineq", "fun": lambda x: x[0]},
-        {"type": "ineq", "fun": lambda x: x[1]},
-        {"type": "ineq", "fun": lambda x: 0.5 - x[0]},
-        {"type": "ineq", "fun": lambda x: 0.4 - x[1]},
-        {"type": "ineq", "fun": lambda x: -x[2]},
-        {"type": "ineq", "fun": lambda x: x[4] - x[3] - 0.1},
-        {"type": "ineq", "fun": lambda x: x[5] - x[4] - 0.1},
-        {"type": "ineq", "fun": lambda x: x[6] - x[5] - 0.1},
-        {"type": "ineq", "fun": lambda x: x[3] - 0.01},
-        {"type": "ineq", "fun": lambda x: 1.99 - x[6]},
+        gt_zero(lambda x: x[0]),  # stretch_amount must be > 0
+        gt_zero(lambda x: 0.5 - x[0]),  # stretch_amount must be < 0.5
+        gt_zero(lambda x: x[1] - 0.01),  # stretch_join must be > 0.01
+        gt_zero(lambda x: 0.4 - x[1]),  # stretch_join must be < 0.4
+        gt_zero(lambda x: -x[2]),  # ss_grad_LE must be <= 0
+        gt_zero(lambda x: x[4] - x[3] - 0.1),  # knots must be at least 0.1 apart
+        gt_zero(lambda x: x[5] - x[4] - 0.1),  # knots must be at least 0.1 apart
+        gt_zero(lambda x: x[6] - x[5] - 0.1),  # knots must be at least 0.1 apart
+        gt_zero(lambda x: x[3] - 0.01),  # knot_positions[0] must be > 0.01
+        gt_zero(lambda x: 1.99 - x[6]),  # knot_positions[3] must be < 1.99
     ]
+
+    # Validate initial guess against constraints
+    constraint_names = [
+        "stretch_amount > 0",
+        "stretch_amount < 0.5",
+        "stretch_join > 0.01",
+        "stretch_join < 0.4",
+        "ss_grad_LE <= 0",
+        "knot[1] - knot[0] > 0.1",
+        "knot[2] - knot[1] > 0.1",
+        "knot[3] - knot[2] > 0.1",
+        "knot[0] > 0.01",
+        "knot[3] < 1.99",
+    ]
+
+    violated_constraints = []
+    for i, constraint in enumerate(constraints):
+        value = constraint["fun"](x0)
+        if value <= 0:
+            violated_constraints.append(f"{constraint_names[i]} (value: {value:.3f})")
+
+    if violated_constraints:
+        raise ValueError(
+            f"Initial guess x0={x0} violates constraints: {', '.join(violated_constraints)}"
+        )
     e0 = err(x0)
-    tol = 1e-8 * e0
+    tol = 1e-4 * e0
     opt = minimize(err, x0, tol=tol, constraints=constraints)
-    assert opt.success, opt.message
+    if not opt.success:
+        raise RuntimeError(repr(opt))
 
     x = opt.x
     result = create(x)
