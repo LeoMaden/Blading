@@ -27,8 +27,9 @@ class LECircle:
         x = self.xc + self.radius * np.cos(theta)
         y = self.yc + self.radius * np.sin(theta)
 
-        ax.plot(x, y, "k-", label="LE circle")
+        ax.plot(x, y, "b--", label="LE circle")
         ax.plot(*self.fit_points.T, "b.", label="LE points")
+
         ax.legend()
         plt.axis("equal")
 
@@ -323,6 +324,7 @@ class ThicknessResult:
 
         # Plot LE circle fit
         le_circle = fit_LE_circle(original_sec)
+        self.plot_section_comparison(original_sec, ax4)
         le_circle.plot(ax4)
         ax4.set_title(f"Leading Edge Circle (R={le_circle.radius:.4f})")
 
