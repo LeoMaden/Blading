@@ -31,7 +31,7 @@ class LECircle:
         ax.plot(*self.fit_points.T, "b.", label="LE points")
         ax.legend()
         plt.axis("equal")
-        
+
         # Zoom into leading edge region
         x_range = self.radius * 3
         y_range = self.radius * 3
@@ -125,14 +125,6 @@ class ThicknessParams:
         )
 
 
-def compute_shape_space_spline(s, t):
-    """Compute spline in shape space for given arc length and thickness,
-    extrapolating singularities at LE and TE."""
-    ss = shape_space.value(s, t, t[-1])
-    ss_spline = make_interp_spline(s[1:-1], ss[1:-1], k=1)
-    return ss_spline
-
-
 def measure_thickness(sec: Section, stretch_join: float) -> MeasuredThicknessParams:
     """Measure thickness parameters that can be directly extracted from a blade section."""
     s = sec.normalised_arc_length
@@ -142,7 +134,7 @@ def measure_thickness(sec: Section, stretch_join: float) -> MeasuredThicknessPar
 
     # Find point of maximum thickness.
     t_spline = make_interp_spline(s, t)
-    (s_max_t,) = fmin(lambda s: -t_spline(s), x0=0.5)  # type: ignore
+    (s_max_t,) = fmin(lambda s: -t_spline(s), x0=0.5, disp=False)  # type: ignore
     max_t = t_spline(s_max_t)
 
     # Trailing edge thickness (assuming blunt TE).
@@ -164,8 +156,8 @@ def measure_thickness(sec: Section, stretch_join: float) -> MeasuredThicknessPar
     ##### Shape space #####
 
     # Extrapolate LE and TE singularities.
-    ss_spline = compute_shape_space_spline(s, t)
-    ss = ss_spline(s)
+    ss = shape_space.value(s, t, t[-1])
+    ss_spline = make_interp_spline(s, ss)
     ss_stretch_join = ss_spline(stretch_join)
     ss_grad = np.gradient(ss, s)
     ss_grad_spline = make_interp_spline(s, ss_grad)
@@ -445,7 +437,7 @@ def fit_thickness(sec: Section, plot_intermediate: bool = False) -> ThicknessRes
     s_sec = sec.normalised_arc_length
     t_sec = sec.thickness
     # Calculate original shape space values for comparison
-    ss = compute_shape_space_spline(s_sec, t_sec)(s_sec)
+    ss = shape_space.value(s_sec, t_sec, t_sec[-1])
 
     def err(x):
         res = create(x)
