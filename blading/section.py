@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Callable, Generic, MutableMapping, Optional, TypeVar
+from typing import Callable, Generic, MutableMapping, Optional, TypeVar, Literal
 from geometry.curves import PlaneCurve
 from numpy.typing import NDArray
 import numpy as np
@@ -7,15 +7,23 @@ from numpy.polynomial import Polynomial
 import matplotlib.pyplot as plt
 
 
-@dataclass(frozen=True)
+@dataclass
 class Section:
     camber_line: PlaneCurve
     thickness: NDArray
     stream_line: Optional[PlaneCurve]
+    stream_distance: float = 0.0  # Distance along stream_line
+    circumferential_position: float = 0.0  # y-coordinate of reference point
+    reference_point: Literal["leading_edge", "trailing_edge", "centroid"] = (
+        "leading_edge"
+    )
 
     def __post_init__(self) -> None:
         assert self.normalised_arc_length[0] == 0
         assert self.normalised_arc_length[-1] == 1
+
+        # Translate camber line so reference point is at origin
+        self._translate_camber_line_to_origin()
 
     @property
     def chord(self) -> float:
@@ -52,6 +60,36 @@ class Section:
         param = np.r_[-camber_param[1:][::-1], camber_param]
 
         return PlaneCurve(coords, param)
+
+    def _get_reference_point_coordinates(self) -> NDArray:
+        """Get the coordinates of the reference point on the camber line."""
+        camber_coords = self.camber_line.coords
+
+        if self.reference_point == "leading_edge":
+            return camber_coords[0]
+        elif self.reference_point == "trailing_edge":
+            return camber_coords[-1]
+        elif self.reference_point == "centroid":
+            return np.mean(camber_coords, axis=0)
+        else:
+            raise ValueError(f"Unknown reference point: {self.reference_point}")
+
+    def _translate_camber_line_to_origin(self) -> None:
+        """Translate the camber line so the reference point is at the origin."""
+        reference_coords = self._get_reference_point_coordinates()
+
+        # Create translation vector to move reference point to origin
+        translation = -reference_coords
+
+        # Translate camber line coordinates
+        translated_coords = self.camber_line.coords + translation
+
+        # Create new camber line with translated coordinates
+        translated_camber_line = PlaneCurve(translated_coords, self.camber_line.param)
+        self.camber_line = translated_camber_line
+
+        # Store the translation that was applied (y-coordinate of reference point)
+        self.circumferential_position = reference_coords[1]
 
     def _signed_thickness(self) -> NDArray:
         normal = self.camber_line.signed_normal().coords
@@ -90,7 +128,14 @@ class Section:
         thickness = self.thickness.copy()
         thickness[mask_round_TE] = poly(s[mask_round_TE])
 
-        return Section(self.camber_line, thickness, self.stream_line)
+        return Section(
+            self.camber_line,
+            thickness,
+            self.stream_line,
+            self.stream_distance,
+            self.circumferential_position,
+            self.reference_point,
+        )
 
     def add_round_TE(self) -> "Section":
         s = self.normalised_arc_length
@@ -118,9 +163,63 @@ class Section:
         mask_round_TE = s > min(x_te)
         t_over_c[mask_round_TE] = np.interp(s[mask_round_TE], x_te, y_te)
 
-        return Section(self.camber_line, t_over_c * self.chord, self.stream_line)
+        return Section(
+            self.camber_line,
+            t_over_c * self.chord,
+            self.stream_line,
+            self.stream_distance,
+            self.circumferential_position,
+            self.reference_point,
+        )
 
     ###### Plotting ######
+
+    def plot_section(self, ax=None, show_camber_line=True, *plot_args, **plot_kwargs):
+        """Plot the full section shape including upper and lower surfaces."""
+        if ax is None:
+            _, ax = plt.subplots()
+
+        # Get upper and lower curves
+        upper = self.upper_curve()
+        lower = self.lower_curve()
+
+        # Plot upper and lower surfaces
+        ax.plot(
+            upper.coords[:, 0],
+            upper.coords[:, 1],
+            "b-",
+            label="Upper surface",
+            *plot_args,
+            **plot_kwargs,
+        )
+        ax.plot(
+            lower.coords[:, 0],
+            lower.coords[:, 1],
+            "r-",
+            label="Lower surface",
+            *plot_args,
+            **plot_kwargs,
+        )
+
+        # Optionally plot camber line
+        if show_camber_line:
+            camber_coords = self.camber_line.coords
+            ax.plot(
+                camber_coords[:, 0],
+                camber_coords[:, 1],
+                "k--",
+                alpha=0.7,
+                label="Camber line",
+            )
+
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+        ax.set_aspect("equal")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        ax.set_title("Section Shape")
+
+        return ax
 
     def plot_thickness(self, ax=None, *plot_args, **plot_kwargs):
         if ax is None:
@@ -153,8 +252,169 @@ class Section:
         ax.set_xlabel("Normalised arc length")
         ax.set_ylabel("Non-dimensional camber")
 
+    def plot_summary(self, figsize=(12, 8)):
+        """Plot a comprehensive summary of the section including shape, thickness/chord, camber, and meridional streamline if available."""
+        # Determine layout based on whether stream line is available
+        has_streamline = self.stream_line is not None
+
+        if has_streamline:
+            # 2x2 grid: section and meridional on top, thickness and camber on bottom
+            fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=figsize)
+
+            # Top row: Section shape and meridional streamline
+            self.plot_section(ax=ax1, show_camber_line=True)
+            ax1.set_title("Section Shape")
+
+            self.plot_meridional_streamline(ax=ax2)
+            ax2.set_title("Meridional Stream Line")
+
+            # Bottom row: Thickness and camber
+            self.plot_thickness_to_chord(ax=ax3)
+            ax3.set_title("Thickness/Chord Ratio")
+
+            self.plot_nondim_camber(ax=ax4)
+            ax4.set_title("Non-dimensional Camber")
+
+            axes = ((ax1, ax2), (ax3, ax4))
+        else:
+            # 1x3 grid: original layout when no streamline
+            fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 5))
+
+            self.plot_section(ax=ax1, show_camber_line=True)
+            ax1.set_title("Section Shape")
+
+            self.plot_thickness_to_chord(ax=ax2)
+            ax2.set_title("Thickness/Chord Ratio")
+
+            self.plot_nondim_camber(ax=ax3)
+            ax3.set_title("Non-dimensional Camber")
+
+            axes = (ax1, ax2, ax3)
+
+        # Add overall title with section info
+        info_text = f"Reference Point: {self.reference_point.replace('_', ' ').title()}"
+        if self.stream_distance != 0.0:
+            info_text += f" | Stream Distance: {self.stream_distance:.3f}"
+        if self.circumferential_position != 0.0:
+            info_text += (
+                f" | Circumferential Position: {self.circumferential_position:.3f}"
+            )
+
+        fig.suptitle(f"Section Summary\n{info_text}", fontsize=14)
+        # plt.tight_layout()
+
+        return fig, axes
+
+    def plot_meridional_streamline(self, ax=None, *plot_args, **plot_kwargs):
+        """Plot the stream line in the meridional (x, r) plane with key features highlighted.
+
+        Highlights:
+        - Leading edge
+        - Trailing edge
+        - Reference point
+        - Total extent of the blade along the stream line
+        """
+        if self.stream_line is None:
+            raise ValueError("No stream line available for this section")
+
+        if ax is None:
+            _, ax = plt.subplots()
+
+        # Plot the stream line
+        stream_coords = self.stream_line.coords
+        ax.plot(
+            stream_coords[:, 0],
+            stream_coords[:, 1],
+            "k-",
+            linewidth=2,
+            label="Stream line",
+            *plot_args,
+            **plot_kwargs,
+        )
+
+        # Get key points along the stream line
+        # Assuming the stream line parameter corresponds to the blade extent
+        le_idx = 0  # Leading edge at start
+        te_idx = -1  # Trailing edge at end
+
+        # Find reference point index based on normalized arc length
+        ref_s = self._get_reference_point_normalized_arc_length()
+        ref_idx = np.argmin(np.abs(self.stream_line.param - ref_s))
+
+        # Highlight leading edge
+        ax.plot(
+            stream_coords[le_idx, 0],
+            stream_coords[le_idx, 1],
+            "go",
+            markersize=8,
+            label="Leading edge",
+        )
+
+        # Highlight trailing edge
+        ax.plot(
+            stream_coords[te_idx, 0],
+            stream_coords[te_idx, 1],
+            "ro",
+            markersize=8,
+            label="Trailing edge",
+        )
+
+        # Highlight reference point with x marker
+        ax.plot(
+            stream_coords[ref_idx, 0],
+            stream_coords[ref_idx, 1],
+            "bx",
+            markersize=10,
+            markeredgewidth=1,
+            label=f'Reference point ({self.reference_point.replace("_", " ")})',
+        )
+
+        # Show total extent with vertical lines
+        x_min, x_max = stream_coords[le_idx, 0], stream_coords[te_idx, 0]
+        r_range = stream_coords[:, 1]
+        r_min, r_max = np.min(r_range), np.max(r_range)
+
+        # Vertical lines showing blade extent
+        ax.axvline(x_min, color="gray", linestyle="--", alpha=0.5, label="Blade extent")
+        ax.axvline(x_max, color="gray", linestyle="--", alpha=0.5)
+
+        # # Add extent annotation
+        # ax.annotate(
+        #     f"Blade extent: {x_max - x_min:.3f}",
+        #     xy=((x_min + x_max) / 2, np.mean(r_range)),
+        #     xytext=(10, 10),
+        #     textcoords="offset points",
+        #     bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.7),
+        #     arrowprops=dict(arrowstyle="->", connectionstyle="arc3,rad=0"),
+        # )
+
+        ax.set_xlabel("x (axial direction)")
+        ax.set_ylabel("r (radial direction)")
+        ax.set_title("Meridional Stream Line")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        ax.axis("equal")
+
+        return ax
+
+    def _get_reference_point_normalized_arc_length(self) -> float:
+        """Get the normalized arc length position of the reference point."""
+        if self.reference_point == "leading_edge":
+            return 0.0
+        elif self.reference_point == "trailing_edge":
+            return 1.0
+        elif self.reference_point == "centroid":
+            return 0.5
+        else:
+            raise ValueError(f"Unknown reference point: {self.reference_point}")
+
 
 @dataclass(frozen=True)
 class FlatSection:
     curve: PlaneCurve
     stream_line: Optional[PlaneCurve]
+
+
+@dataclass(frozen=True)
+class FlatBlade:
+    sections: list[FlatSection]
