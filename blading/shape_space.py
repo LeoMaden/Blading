@@ -14,7 +14,27 @@ def value(x, z, zT):
     zT : arraylike
         thickness at the trailing edge (x=1)
     """
-    return (z - x * zT) / (x**0.5 * (1 - x))
+    x = np.asarray(x)
+    z = np.asarray(z)
+
+    # Calculate denominator and find valid points
+    denom = x**0.5 * (1 - x)
+    eps = 1e-12
+    valid = np.abs(denom) > eps
+
+    # Initialize result array
+    result = np.full_like(x, np.nan, dtype=float)
+
+    # Calculate result only for valid points
+    if np.any(valid):
+        result[valid] = (z[valid] - x[valid] * zT) / denom[valid]
+
+    # Use interpolation to fill invalid points
+    # np.interp uses nearest neighbour extrapolation
+    if np.any(~valid) and np.sum(valid) >= 2:
+        result[~valid] = np.interp(x[~valid], x[valid], result[valid])
+
+    return result
 
 
 def deriv1(x, z, zT, zp):
