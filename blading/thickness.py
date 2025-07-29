@@ -62,7 +62,24 @@ def stretch_func(amount, join):
 
 
 @dataclass
-class Params:
+class MeasuredThicknessParams:
+    """Parameters that can be directly measured from a blade section."""
+
+    radius_LE: float
+    s_max_t: float
+    max_t: float
+    curv_max_t: float
+    thickness_TE: float
+    wedge_TE: float
+    ss_stretch_join: float
+    ss_grad_TE: float  # Measured from original thickness
+    ss_grad_LE: float  # Measured but typically not used due to steepness
+
+
+@dataclass
+class ThicknessParams:
+    """Complete set of thickness parameters needed to create a thickness distribution."""
+
     radius_LE: float
     s_max_t: float
     max_t: float
@@ -71,10 +88,39 @@ class Params:
     wedge_TE: float
     ss_stretch_join: float
     ss_grad_TE: float
-    ss: NDArray
+    stretch_amount: float
+    stretch_join: float
+    knot_positions: tuple[float, float, float, float]
+    ss_grad_LE: float
+
+    @classmethod
+    def from_measured_and_fit(
+        cls,
+        measured: MeasuredThicknessParams,
+        stretch_amount: float,
+        stretch_join: float,
+        knot_positions: tuple[float, float, float, float],
+        ss_grad_LE: float,
+    ) -> "ThicknessParams":
+        """Create ThicknessParams from measured parameters and fit parameters."""
+        return cls(
+            radius_LE=measured.radius_LE,
+            s_max_t=measured.s_max_t,
+            max_t=measured.max_t,
+            curv_max_t=measured.curv_max_t,
+            thickness_TE=measured.thickness_TE,
+            wedge_TE=measured.wedge_TE,
+            ss_stretch_join=measured.ss_stretch_join,
+            ss_grad_TE=measured.ss_grad_TE,
+            stretch_amount=stretch_amount,
+            stretch_join=stretch_join,
+            knot_positions=knot_positions,
+            ss_grad_LE=ss_grad_LE,
+        )
 
 
-def measure_thickness(sec: Section, stretch_join: float):
+def measure_thickness(sec: Section, stretch_join: float) -> MeasuredThicknessParams:
+    """Measure thickness parameters that can be directly extracted from a blade section."""
     s = sec.normalised_arc_length
 
     ##### Thickness #####
@@ -108,11 +154,12 @@ def measure_thickness(sec: Section, stretch_join: float):
     ss_spline = make_interp_spline(s[1:-1], ss[1:-1], k=1)
     ss = ss_spline(s)
     ss_stretch_join = ss_spline(stretch_join)
-    ss_grad = np.gradient(ss_spline(s), s)
+    ss_grad = np.gradient(ss, s)
     ss_grad_spline = make_interp_spline(s, ss_grad)
     ss_grad_TE = ss_grad_spline(1)
+    ss_grad_LE = ss_grad_spline(0)
 
-    return Params(
+    return MeasuredThicknessParams(
         radius_LE=radius_LE,
         s_max_t=s_max_t,
         max_t=max_t,
@@ -121,25 +168,17 @@ def measure_thickness(sec: Section, stretch_join: float):
         wedge_TE=wedge_TE,
         ss_stretch_join=ss_stretch_join,
         ss_grad_TE=ss_grad_TE,
-        ss=ss,
+        ss_grad_LE=ss_grad_LE,
     )
 
 
 @dataclass
-class FitParams:
-    stretch_amount: float
-    stretch_join: float
-    knot_positions: tuple[float, float, float, float]
-    ss_grad_LE: float
+class ThicknessResult:
+    """Result of thickness parameterisation with improved usability and plotting."""
 
-
-@dataclass
-class Result:
     spline: BSpline
     stretch: Callable[[NDArray], NDArray]
-    p: Params
-    p_fit: FitParams
-    ss: NDArray
+    params: ThicknessParams
     t_TE: float
     s_LE: float
     ss_LE: float
@@ -149,24 +188,162 @@ class Result:
     ss_max_t: float
     ss_join: float
 
+    def create_thickness_distribution(self, s: NDArray) -> NDArray:
+        """Create thickness distribution for given arc length distribution."""
+        s_stretch = self.stretch(s)
+        ss_fit = self.spline(s_stretch)
+        return shape_space.inverse(s, ss_fit, self.t_TE)
 
-def create_thickness(p: Params, p_fit: FitParams):
-    stretch_join = p_fit.stretch_join
-    stretch_amount = p_fit.stretch_amount
+    def create_section(self, camber_line, stream_line=None) -> Section:
+        """Create a Section with this thickness distribution."""
+        s = camber_line.param
+        thickness = self.create_thickness_distribution(s)
+        return Section(camber_line, thickness, stream_line)
+
+    def plot_shape_space(self, original_sec: Section = None, ax=None):
+        """Plot the shape space representation with fit."""
+        if ax is None:
+            _, ax = plt.subplots()
+
+        # Plot the fitted spline
+        s_plot = np.linspace(self.s_LE, self.s_TE, 200)
+        ss_plot = self.spline(s_plot)
+        ax.plot(s_plot, ss_plot, "r-", label="Fitted spline", linewidth=2)
+
+        # Plot original if provided
+        if original_sec is not None:
+            s_orig = original_sec.normalised_arc_length
+            t_orig = original_sec.thickness
+            # Calculate original shape space values for plotting
+            ss_orig = shape_space.value(s_orig, t_orig, t_orig[-1])
+            s_stretch_orig = self.stretch(s_orig)
+            ax.plot(s_stretch_orig, ss_orig, "k-", label="Original", alpha=0.7)
+
+        # Plot key points
+        ax.plot(self.s_LE, self.ss_LE, "ro", markersize=8, label="Leading edge")
+        ax.plot(self.s_TE, self.ss_TE, "ro", markersize=8, label="Trailing edge")
+        ax.plot(self.s_max_t, self.ss_max_t, "go", markersize=8, label="Max thickness")
+        ax.plot(
+            self.params.stretch_join,
+            self.ss_join,
+            "bo",
+            markersize=8,
+            label="Stretch join",
+        )
+
+        # Plot knots
+        degree = self.spline.k
+        n_coef = len(self.spline.c)
+        knot_avg = np.array(
+            [self.spline.t[i : i + degree + 1].mean() for i in range(n_coef)]
+        )
+        ax.plot(
+            knot_avg,
+            self.spline.c,
+            "bx",
+            markersize=10,
+            markeredgewidth=2,
+            label="Control points",
+        )
+
+        ax.set_xlabel("Stretched arc length")
+        ax.set_ylabel("Shape space value")
+        ax.set_title("Thickness Shape Space Representation")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        return ax
+
+    def plot_thickness_comparison(self, original_sec: Section, ax=None):
+        """Plot comparison between original and fitted thickness."""
+        if ax is None:
+            _, ax = plt.subplots()
+
+        s_orig = original_sec.normalised_arc_length
+        t_orig = original_sec.thickness
+        t_fit = self.create_thickness_distribution(s_orig)
+
+        ax.plot(s_orig, t_orig, "k-", label="Original", linewidth=2)
+        ax.plot(s_orig, t_fit, "r--", label="Fitted", linewidth=2)
+
+        # Highlight key points
+        ax.axvline(
+            self.params.s_max_t,
+            color="g",
+            linestyle=":",
+            alpha=0.7,
+            label="Max thickness",
+        )
+        ax.axvline(
+            self.params.stretch_join,
+            color="b",
+            linestyle=":",
+            alpha=0.7,
+            label="Stretch join",
+        )
+
+        ax.set_xlabel("Normalised arc length")
+        ax.set_ylabel("Thickness")
+        ax.set_title("Thickness Distribution Comparison")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        return ax
+
+    def plot_section_comparison(self, original_sec: Section, ax=None):
+        """Plot comparison between original and fitted blade sections."""
+        if ax is None:
+            _, ax = plt.subplots()
+
+        # Plot original section
+        plot_plane_curve(original_sec.upper_and_lower(), ax, "k-", label="Original")
+
+        # Create and plot fitted section
+        fitted_sec = self.create_section(
+            original_sec.camber_line, original_sec.stream_line
+        )
+        plot_plane_curve(fitted_sec.upper_and_lower(), ax, "r--", label="Fitted")
+
+        ax.set_title("Blade Section Comparison")
+        ax.legend()
+        ax.axis("equal")
+        ax.grid(True, alpha=0.3)
+        return ax
+
+    def plot_fit_summary(self, original_sec: Section):
+        """Create a comprehensive summary plot of the thickness fit."""
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 10))
+
+        self.plot_shape_space(original_sec, ax1)
+        self.plot_thickness_comparison(original_sec, ax2)
+        self.plot_section_comparison(original_sec, ax3)
+
+        # Plot LE circle fit
+        le_circle = fit_LE_circle(original_sec)
+        le_circle.plot(ax4)
+        ax4.set_title(f"Leading Edge Circle (R={le_circle.radius:.4f})")
+
+        plt.tight_layout()
+        plt.show()
+        return fig
+
+
+def create_thickness(params: ThicknessParams) -> ThicknessResult:
+    """Create thickness distribution from unified parameters."""
+    stretch_join = params.stretch_join
+    stretch_amount = params.stretch_amount
 
     # Leading edge.
     s_LE = -stretch_amount
-    ss_LE = np.sqrt(p.radius_LE)
+    ss_LE = np.sqrt(params.radius_LE)
 
     # Trailing edge.
     s_TE = 1
-    ss_TE = np.tan(p.wedge_TE) + p.thickness_TE
+    ss_TE = np.tan(params.wedge_TE) + params.thickness_TE
 
     # Maximum thickness.
-    s_max_t = p.s_max_t
-    max_t = p.max_t
-    t_TE = p.thickness_TE
-    curv_max_t = p.curv_max_t
+    s_max_t = params.s_max_t
+    max_t = params.max_t
+    t_TE = params.thickness_TE
+    curv_max_t = params.curv_max_t
     ss_max_t = shape_space.value(s_max_t, max_t, t_TE)
     ss_grad_max_t = shape_space.deriv1(s_max_t, max_t, t_TE, 0)
     ss_curv_max_t = shape_space.deriv2(s_max_t, max_t, t_TE, 0, curv_max_t)
@@ -176,7 +353,7 @@ def create_thickness(p: Params, p_fit: FitParams):
 
     # Calculate knot positions based on position of maximum thickness and stretch.
     s_transform = make_interp_spline([0, 1, 2], [s_LE, s_max_t, s_TE], k=1)
-    s_knots = s_transform(np.asarray(p_fit.knot_positions))
+    s_knots = s_transform(np.asarray(params.knot_positions))
 
     # Calculate knot vector.
     knots = np.r_[np.repeat(s_LE, 4), s_knots, np.repeat(s_TE, 4)]
@@ -201,9 +378,9 @@ def create_thickness(p: Params, p_fit: FitParams):
         (value_at(s_max_t), ss_max_t),
         (grad_at(s_max_t), ss_grad_max_t),
         (curv_at(s_max_t), ss_curv_max_t),
-        (value_at(stretch_join), p.ss_stretch_join),
-        (grad_at(s_TE), p.ss_grad_TE),
-        (grad_at(s_LE), p_fit.ss_grad_LE),
+        (value_at(stretch_join), params.ss_stretch_join),
+        (grad_at(s_TE), params.ss_grad_TE),
+        (grad_at(s_LE), params.ss_grad_LE),
     ]
     assert len(constraints) == n_coef
 
@@ -214,12 +391,10 @@ def create_thickness(p: Params, p_fit: FitParams):
 
     spline = BSpline(knots, coefs, degree)
 
-    return Result(
+    return ThicknessResult(
         spline=spline,
         stretch=stretch,
-        p=p,
-        p_fit=p_fit,
-        ss=p.ss,
+        params=params,
         t_TE=t_TE,
         s_LE=s_LE,
         ss_LE=ss_LE,
@@ -227,38 +402,41 @@ def create_thickness(p: Params, p_fit: FitParams):
         ss_TE=ss_TE,
         s_max_t=s_max_t,
         ss_max_t=ss_max_t,
-        ss_join=p.ss_stretch_join,
+        ss_join=params.ss_stretch_join,
     )
 
 
-def fit_thickness(sec: Section) -> tuple[Params, FitParams]:
+def fit_thickness(sec: Section, plot_intermediate: bool = False) -> ThicknessResult:
+    """Fit thickness parameterisation to a blade section."""
 
     # Initial guess of fitting parameters.
     x0 = [0.1, 0.15, -0.5, 0.05, 0.65, 1, 1.2]
 
     # Function to calculate parameters from optimisation vector.
-    def create_params(x):
-        p_fit = FitParams(
+    def create_params(x) -> ThicknessParams:
+        measured = measure_thickness(sec, x[1])  # x[1] is stretch_join
+        return ThicknessParams.from_measured_and_fit(
+            measured=measured,
             stretch_amount=x[0],
             stretch_join=x[1],
-            ss_grad_LE=x[2],
             knot_positions=tuple(x[3:]),
+            ss_grad_LE=x[2],  # Use fitted value, not measured
         )
-        p = measure_thickness(sec, p_fit.stretch_join)
-        return p, p_fit
 
     # Function to create thickness from optimisation vector.
-    def create(x):
-        p, p_fit = create_params(x)
-        return create_thickness(p, p_fit)
+    def create(x) -> ThicknessResult:
+        params = create_params(x)
+        return create_thickness(params)
 
     # Function to calculate error between fit and actual in shape space.
     def err(x):
         res = create(x)
         s = sec.normalised_arc_length
+        t = sec.thickness
+        # Calculate original shape space values for comparison
+        ss = shape_space.value(s, t, t[-1])
         s_stretch = res.stretch(s)
         ss_fit = res.spline(s_stretch)
-        ss = res.ss
         return np.trapezoid((ss - ss_fit) ** 2, s)
 
     # Constraints on optimisation variables.
@@ -280,42 +458,17 @@ def fit_thickness(sec: Section) -> tuple[Params, FitParams]:
     assert opt.success, opt.message
 
     x = opt.x
-    return create_params(x)
+    result = create(x)
+
+    if plot_intermediate:
+        result.plot_fit_summary(sec)
+
+    return result
 
 
-def plot_fitted_thickness(sec: Section, res: Result):
-    s = sec.normalised_arc_length
-    s_stretch = res.stretch(s)
-    ss_fit = res.spline(s_stretch)
-
-    # Calculate avg. knot vector.
-    degree = res.spline.k
-    n_coef = len(res.spline.c)
-    knot_avg = np.array(
-        [res.spline.t[i : i + degree + 1].mean() for i in range(n_coef)]
+def plot_fitted_thickness(sec: Section, res: ThicknessResult):
+    """Legacy plotting function - use ThicknessResult.plot_fit_summary() instead."""
+    print(
+        "Warning: plot_fitted_thickness is deprecated. Use ThicknessResult.plot_fit_summary() instead."
     )
-
-    t_fit = shape_space.inverse(s, ss_fit, res.t_TE)
-    sec_fit = Section(sec.camber_line, t_fit, sec.stream_line)
-
-    # Plotting
-    plt.figure()
-    plt.title("Shape space")
-    plt.plot(s_stretch, res.ss, "k-")
-    plt.plot(s_stretch, ss_fit, "r--")
-    plt.plot(res.s_LE, res.ss_LE, "r.")
-    plt.plot(res.s_TE, res.ss_TE, "r.")
-    plt.plot(res.s_max_t, res.ss_max_t, "r.")
-    plt.plot(res.p_fit.stretch_join, res.ss_join, "r.")
-    plt.plot(knot_avg, res.spline.c, "bx")
-
-    fig, ax = plt.subplots()
-    plot_plane_curve(sec.upper_and_lower(), ax, "k.-")
-    plot_plane_curve(sec_fit.upper_and_lower(), ax, "r--")
-    plt.axis("equal")
-
-    fig, ax = plt.subplots()
-    sec.plot_thickness(ax, "k-")
-    sec_fit.plot_thickness(ax, "r--")
-
-    plt.show()
+    res.plot_fit_summary(sec)

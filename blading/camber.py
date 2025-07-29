@@ -1,62 +1,22 @@
-from numpy.polynomial import Polynomial
 import matplotlib.pyplot as plt
 from dataclasses import dataclass
-from typing import Callable
-from geometry.curves import PlaneCurve, plot_plane_curve
-from numpy.typing import NDArray, ArrayLike
+from geometry.curves import PlaneCurve
+from numpy.typing import NDArray
 import numpy as np
 from scipy.interpolate import (
     make_interp_spline,
     BSpline,
-    CubicHermiteSpline,
-    CubicSpline,
 )
-from blading import shape_space
-from scipy.optimize import fmin, least_squares, minimize
-from circle_fit import taubinSVD, plot_data_circle
+from scipy.optimize import minimize
 from .section import Section
-from pprint import pprint
 
 
 @dataclass
-class Camber:
+class CamberParams:
     angle_LE: float
     angle_TE: float
-    camber: NDArray
-    s: NDArray
+    chord: float
 
-
-def to_camber_line(c: Camber):
-    angle = c.camber * (c.angle_TE - c.angle_LE) + c.angle_LE
-    curve = PlaneCurve.from_angle(angle, c.s)
-    return curve
-
-
-def from_camber_line(camber_line: PlaneCurve):
-    s = camber_line.param
-    angle = camber_line.turning_angle()
-    angle_LE = angle[0]
-    angle_TE = angle[-1]
-    camber = (angle - angle_LE) / (angle_TE - angle_LE)
-    return Camber(angle_LE, angle_TE, camber, s)
-
-
-@dataclass
-class DCAParams:
-    ss_turning: float
-    ss_chord: float
-
-
-def create_dca_camber(p: DCAParams) -> BSpline:
-    return make_interp_spline(
-        [0, p.ss_chord, 1],
-        [0, p.ss_turning, 1],
-        k=1,
-    )
-
-
-@dataclass
-class TransonicParams:
     ss_turning: float
     ss_chord: float
     alpha: float = 0.8
@@ -65,7 +25,82 @@ class TransonicParams:
     sb_scale: tuple[float, float] = (1, 1)
 
 
-def create_transonic_camber(p: TransonicParams) -> BSpline:
+@dataclass
+class Camber:
+    s: NDArray
+    non_dim: NDArray
+    angle: NDArray
+    curve: PlaneCurve
+
+    @staticmethod
+    def from_camber_line(curve: PlaneCurve):
+        s = curve.param
+        angle = curve.turning_angle()
+        non_dim = (angle - angle[0]) / (angle[-1] - angle[0])
+        return Camber(s, non_dim, angle, curve)
+
+    def plot_non_dimensional(self, ax=None, *plot_args, **plot_kwargs):
+        if ax is None:
+            _, ax = plt.subplots()
+        ax.plot(self.s, self.non_dim, *plot_args, **plot_kwargs)
+        ax.set_xlabel("Normalised arc length")
+        ax.set_ylabel("Non-dimensional camber")
+        ax.grid(True)
+        return ax
+
+    def plot_angle_distribution(self, ax=None, *plot_args, **plot_kwargs):
+        if ax is None:
+            _, ax = plt.subplots()
+        ax.plot(self.s, np.degrees(self.angle), *plot_args, **plot_kwargs)
+        ax.set_xlabel("Normalised arc length")
+        ax.set_ylabel("Turning angle (degrees)")
+        ax.grid(True)
+        return ax
+
+
+def _dca_camber(ss_turning: float, ss_chord: float) -> BSpline:
+    return make_interp_spline(
+        [0, ss_chord, 1],
+        [0, ss_turning, 1],
+        k=1,
+    )
+
+
+@dataclass
+class CamberResult:
+    non_dim_spline: BSpline
+    params: CamberParams
+
+    def create_camber_line(self, s: NDArray) -> PlaneCurve:
+        non_dim = self.non_dim_spline(s)
+        return create_camber(non_dim, s, self.params)
+
+    def plot_non_dim_spline(
+        self, s: NDArray = None, ax=None, *plot_args, **plot_kwargs
+    ):
+        if s is None:
+            s = np.linspace(0, 1, 100)
+        if ax is None:
+            _, ax = plt.subplots()
+
+        non_dim = self.non_dim_spline(s)
+        ax.plot(s, non_dim, *plot_args, **plot_kwargs)
+        ax.set_xlabel("Normalised arc length")
+        ax.set_ylabel("Non-dimensional camber")
+        ax.grid(True)
+        return ax
+
+    def plot_camber_comparison(self, original_camber: Camber, ax=None):
+        if ax is None:
+            _, ax = plt.subplots()
+
+        original_camber.plot_non_dimensional(ax, "k-", label="Original")
+        self.plot_non_dim_spline(original_camber.s, ax, "r--", label="Fitted")
+        ax.legend()
+        return ax
+
+
+def create_non_dim_camber(p: CamberParams) -> BSpline:
     # Set position of interior knots.
     xj = p.ss_chord
     t6 = (3 * xj - p.beta) / (2 + p.alpha - p.beta)
@@ -85,7 +120,7 @@ def create_transonic_camber(p: TransonicParams) -> BSpline:
     t_star = np.r_[0, x_ss1, x_ss2, xj, x_sb1, x_sb2, 1]
 
     # DCA distribution.
-    dca_spline = create_dca_camber(DCAParams(p.ss_turning, p.ss_chord))
+    dca_spline = _dca_camber(p.ss_turning, p.ss_chord)
     coefs = dca_spline(t_star)
 
     # Adjust coefficients.
@@ -94,25 +129,32 @@ def create_transonic_camber(p: TransonicParams) -> BSpline:
     coefs[4] *= p.sb_scale[0]
     coefs[5] *= p.sb_scale[1]
 
-    return BSpline(knots, coefs, k=3)
+    spline = BSpline(knots, coefs, k=3)
+
+    return spline
 
 
-@dataclass
-class Result:
-    spline: BSpline
-    s: NDArray
-    p: TransonicParams
+def create_camber(non_dim: NDArray, s: NDArray, p: CamberParams):
+    angle = non_dim * (p.angle_TE - p.angle_LE) + p.angle_LE
+    camber_line = PlaneCurve.from_angle(angle, s)
+    camber_line *= p.chord
+    return camber_line
 
 
-def fit_transonic_camber(sec: Section) -> Result:
-    camber = from_camber_line(sec.camber_line)
+def fit_camber(sec: Section, plot_intermediate=False) -> CamberResult:
+    camber = Camber.from_camber_line(sec.camber_line)
     s = camber.s
-    distr = camber.camber
+    non_dim = camber.non_dim
+    chord = camber.curve.length()
+    angle = camber.angle
 
     x0 = [0.5, 0.5, 1, 1, 1, 1]
 
     def params(x):
-        return TransonicParams(
+        return CamberParams(
+            angle_LE=angle[0],
+            angle_TE=angle[-1],
+            chord=chord,
             ss_turning=x[0],
             ss_chord=x[1],
             ss_scale=(x[2], x[3]),
@@ -121,11 +163,11 @@ def fit_transonic_camber(sec: Section) -> Result:
 
     def create(x):
         p = params(x)
-        return create_transonic_camber(p)(s)
+        return create_non_dim_camber(p)(s)
 
     def err(x):
-        fit = create(x)
-        return np.trapezoid((distr - fit) ** 2, s)
+        non_dim_fit = create(x)
+        return np.trapezoid((non_dim - non_dim_fit) ** 2, s)
 
     constraints = [
         {"type": "ineq", "fun": lambda x: x[0]},
@@ -150,13 +192,14 @@ def fit_transonic_camber(sec: Section) -> Result:
     opt = minimize(err, x0, tol=1e-16, bounds=bounds)
     assert opt.success, opt.message
     x = opt.x
-    # x = [0.5, 0.5]
-    fit = create(x)
-    p = params(x)
 
-    pprint(p)
+    final_params = params(x)
+    spline = create_non_dim_camber(final_params)
+    result = CamberResult(spline, final_params)
 
-    plt.figure()
-    plt.plot(s, distr, "k-")
-    plt.plot(s, fit, "r--")
-    plt.show()
+    if plot_intermediate:
+        result.plot_camber_comparison(camber)
+        plt.title("Camber Fitting Results")
+        plt.show()
+
+    return result
