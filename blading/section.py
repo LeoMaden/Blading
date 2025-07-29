@@ -158,28 +158,3 @@ class Section:
 class FlatSection:
     curve: PlaneCurve
     stream_line: Optional[PlaneCurve]
-
-
-@dataclass(frozen=True)
-class FlatBlade:
-    sections: list[FlatSection]
-
-
-T = TypeVar("T", bound=MutableMapping)
-
-
-@dataclass(frozen=True)
-class PSection(Generic[T]):
-    params: T
-    create: Callable[[T], Section]
-
-    def section(self) -> Section:
-        return self.create(self.params)
-
-    def update(self, params: T) -> "PSection":
-        updated = type(params)()
-        updated.update(**self.params)  # Fill with old parameters
-        updated.update(params)  # Update new parameters
-        return PSection(updated, self.create)
-
-
