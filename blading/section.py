@@ -7,21 +7,23 @@ import numpy as np
 from numpy.polynomial import Polynomial
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+from scipy.interpolate import make_interp_spline
 
 
 class ReferencePoint(Enum):
     """Enumeration of valid reference points for blade sections."""
-    LEADING_EDGE = "leading_edge" 
+
+    LEADING_EDGE = "leading_edge"
     TRAILING_EDGE = "trailing_edge"
     CENTROID = "centroid"
-    
+
     def __str__(self) -> str:
         return self.value
-    
+
     @property
     def display_name(self) -> str:
         """Return a human-readable display name."""
-        return self.value.replace('_', ' ').title()
+        return self.value.replace("_", " ").title()
 
 
 @dataclass
@@ -38,54 +40,60 @@ class Section:
         self._validate_inputs()
         # Translate camber line so reference point is at origin
         self._translate_camber_line_to_origin()
-    
+
     def _ensure_unit_speed_camber_line(self) -> None:
         """Ensure the camber line is unit speed parameterized and normalized."""
         # Check if it's unit speed and normalized using the built-in methods
         is_unit_speed = self.camber_line.is_unit()
         is_normalized = self.camber_line.is_normalised()
-        
+
         # If not unit speed or not normalized, reparameterize
         if not (is_normalized and is_unit_speed):
             # Reparameterize to unit speed and normalize
             unit_speed_curve = self.camber_line.reparameterise_unit().normalise()
-            object.__setattr__(self, 'camber_line', unit_speed_curve)
-    
+            object.__setattr__(self, "camber_line", unit_speed_curve)
+
     def _validate_inputs(self) -> None:
         """Validate input parameters for consistency and correctness."""
         # Validate normalised arc length
         arc_length = self.normalised_arc_length
         if len(arc_length) < 2:
             raise ValueError("Camber line must have at least 2 points")
-        
+
         if not np.isclose(arc_length[0], 0.0, atol=1e-10):
-            raise ValueError(f"Normalised arc length must start at 0, got {arc_length[0]}")
-        
+            raise ValueError(
+                f"Normalised arc length must start at 0, got {arc_length[0]}"
+            )
+
         if not np.isclose(arc_length[-1], 1.0, atol=1e-10):
-            raise ValueError(f"Normalised arc length must end at 1, got {arc_length[-1]}")
-        
+            raise ValueError(
+                f"Normalised arc length must end at 1, got {arc_length[-1]}"
+            )
+
         if not np.all(np.diff(arc_length) > 0):
             raise ValueError("Normalised arc length must be strictly increasing")
-        
+
         # Validate thickness
         if len(self.thickness) != len(arc_length):
             raise ValueError(
                 f"Thickness array length ({len(self.thickness)}) must match "
                 f"camber line length ({len(arc_length)})"
             )
-        
+
         if np.any(self.thickness < 0):
             raise ValueError("Thickness values must be non-negative")
-        
+
         # Validate reference point
         if not isinstance(self.reference_point, ReferencePoint):
-            raise TypeError(f"Reference point must be a ReferencePoint enum, got {type(self.reference_point)}")
-        
+            raise TypeError(
+                f"Reference point must be a ReferencePoint enum, got {type(self.reference_point)}"
+            )
+
         # Validate stream line consistency if provided
         if self.stream_line is not None:
             if len(self.stream_line.coords) < 2:
                 raise ValueError("Stream line must have at least 2 points")
-            
+
             # Check if stream line parameter is monotonic
             if not np.all(np.diff(self.stream_line.param) > 0):
                 raise ValueError("Stream line parameter must be strictly increasing")
@@ -102,15 +110,15 @@ class Section:
         cl = self.camber_line.coords
         thick = self._signed_thickness()
         upper_coords = cl + 0.5 * thick
-        upper_param = self.camber_line.normalise().param
+        upper_param = self.camber_line.param
         return PlaneCurve(upper_coords, upper_param)
 
     def lower_curve(self) -> PlaneCurve:
         cl = self.camber_line.coords
         thick = self._signed_thickness()
-        upper_coords = cl - 0.5 * thick
-        upper_param = self.camber_line.normalise().param
-        return PlaneCurve(upper_coords, upper_param)
+        lower_coords = cl - 0.5 * thick
+        lower_param = self.camber_line.param
+        return PlaneCurve(lower_coords, lower_param)
 
     def upper_and_lower(self) -> PlaneCurve:
         cl = self.camber_line.coords
@@ -167,8 +175,8 @@ class Section:
         self.camber_line = translated_camber_line
 
         # Store the translation that was applied (y-coordinate of reference point)
-        self.circumferential_position = reference_coords[1]
-        self.stream_distance = reference_coords[0]
+        self.circumferential_position += reference_coords[1]
+        self.stream_distance += reference_coords[0]
 
     def _signed_thickness(self) -> NDArray:
         normal = self.camber_line.signed_normal().coords
@@ -601,7 +609,7 @@ class Section:
                 markersize=10,
                 markeredgewidth=1,
                 label=(
-                    f'Reference point ({self.reference_point.display_name})'
+                    f"Reference point ({self.reference_point.display_name})"
                     if show_feature_labels
                     else None
                 ),
@@ -644,7 +652,9 @@ class Section:
             new_reference_point: The new reference point to use
         """
         if not isinstance(new_reference_point, ReferencePoint):
-            raise TypeError(f"Reference point must be a ReferencePoint enum, got {type(new_reference_point)}")
+            raise TypeError(
+                f"Reference point must be a ReferencePoint enum, got {type(new_reference_point)}"
+            )
 
         if new_reference_point == self.reference_point:
             return  # No change needed
@@ -653,11 +663,79 @@ class Section:
         camber_coords = self.camber_line.coords
         camber_coords += np.c_[self.stream_distance, self.circumferential_position]
 
+        # Reset stream distance and circumferential position
+        self.stream_distance = 0.0
+        self.circumferential_position = 0.0
+
         # Update reference point
         self.reference_point = new_reference_point
 
         # Re-translate to origin with new reference point
         self._translate_camber_line_to_origin()
+
+    def __str__(self) -> str:
+        """Return a human-readable string representation of the section."""
+        lines = [
+            f"Section({self.reference_point.display_name})",
+            f"  Points: {self.camber_line.num_points}",
+            f"  Chord: {self.chord:.4f}",
+            f"  Thickness range: [{self.thickness.min():.4f}, {self.thickness.max():.4f}]",
+            f"  Stream distance: {self.stream_distance:.4f}",
+            f"  Circumferential position: {self.circumferential_position:.4f}",
+        ]
+
+        if self.stream_line is not None:
+            lines.append(f"  Stream line: {self.stream_line.num_points} points")
+        else:
+            lines.append("  Stream line: None")
+
+        return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        """Return a detailed string representation for debugging."""
+        return (
+            f"Section("
+            f"points={self.camber_line.num_points}, "
+            f"chord={self.chord:.4f}, "
+            f"ref_point={self.reference_point.value}, "
+            f"stream_dist={self.stream_distance:.4f}, "
+            f"circum_pos={self.circumferential_position:.4f}, "
+            f"has_stream_line={self.stream_line is not None}"
+            f")"
+        )
+
+    def interpolate(self, new_param: NDArray) -> "Section":
+        """Interpolate the section to a new parameter distribution using cubic splines.
+
+        Args:
+            new_param: New parameter values (must be normalized 0 to 1)
+
+        Returns:
+            New Section with interpolated camber line and thickness
+        """
+        # Interpolate camber line to new parameter
+        new_camber_line = self.camber_line.interpolate(new_param)
+
+        # Interpolate thickness values using cubic spline for better accuracy
+        current_param = self.normalised_arc_length
+        if len(current_param) >= 4:  # Need at least 4 points for cubic spline
+            spline = make_interp_spline(current_param, self.thickness, k=3)
+            new_thickness = spline(new_param)
+        else:
+            # Fall back to linear interpolation if not enough points
+            new_thickness = np.interp(new_param, current_param, self.thickness)
+
+        # Create new section with interpolated values
+        # Keep the original stream_line as it has independent parameterization
+        # The Section constructor will validate the new_param through _validate_inputs
+        return Section(
+            camber_line=new_camber_line,
+            thickness=new_thickness,
+            stream_line=self.stream_line,  # Keep original stream_line unchanged
+            stream_distance=self.stream_distance,
+            circumferential_position=self.circumferential_position,
+            reference_point=self.reference_point,
+        )
 
 
 @dataclass(frozen=True)

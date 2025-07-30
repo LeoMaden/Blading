@@ -20,6 +20,9 @@ class Blade:
         if not self._check_reference_point_consistency():
             raise ValueError("All sections must have the same reference point")
 
+        # Interpolate all sections to have the same number of points
+        self._interpolate_sections_to_common_param()
+
     @property
     def num_sections(self) -> int:
         return len(self.sections)
@@ -246,11 +249,20 @@ class Blade:
             section1 = sections[i]
             section2 = sections[i + 1]
 
-            # Get 3D coordinates for both sections
-            upper1_3d = section1._transform_to_3d(section1.upper_curve().coords)
-            lower1_3d = section1._transform_to_3d(section1.lower_curve().coords)
-            upper2_3d = section2._transform_to_3d(section2.upper_curve().coords)
-            lower2_3d = section2._transform_to_3d(section2.lower_curve().coords)
+            # Get curves once for reuse
+            upper1 = section1.upper_curve()
+            lower1 = section1.lower_curve()
+            upper2 = section2.upper_curve()
+            lower2 = section2.lower_curve()
+
+            # Validate section consistency using the curves we just calculated
+            self._validate_section_consistency(upper1, lower1, upper2, lower2)
+
+            # Get 3D coordinates for both sections using the curves
+            upper1_3d = section1._transform_to_3d(upper1.coords)
+            lower1_3d = section1._transform_to_3d(lower1.coords)
+            upper2_3d = section2._transform_to_3d(upper2.coords)
+            lower2_3d = section2._transform_to_3d(lower2.coords)
 
             print(len(upper1_3d), len(upper2_3d))
 
@@ -294,6 +306,65 @@ class Blade:
                         edgecolors="none",
                     )
                 )
+
+    def _validate_section_consistency(self, upper1, lower1, upper2, lower2) -> None:
+        """Validate that curves have consistent lengths for surface filling."""
+        # Check within-section consistency
+        if upper1.num_points != lower1.num_points:
+            raise ValueError(
+                f"Section1 upper and lower curves have different lengths: "
+                f"upper has {upper1.num_points} points, lower has {lower1.num_points} points"
+            )
+
+        if upper2.num_points != lower2.num_points:
+            raise ValueError(
+                f"Section2 upper and lower curves have different lengths: "
+                f"upper has {upper2.num_points} points, lower has {lower2.num_points} points"
+            )
+
+        # Check consistency between sections
+        if upper1.num_points != upper2.num_points:
+            raise ValueError(
+                f"Upper curves have inconsistent lengths: "
+                f"section1 has {upper1.num_points} points, section2 has {upper2.num_points} points"
+            )
+
+        if lower1.num_points != lower2.num_points:
+            raise ValueError(
+                f"Lower curves have inconsistent lengths: "
+                f"section1 has {lower1.num_points} points, section2 has {lower2.num_points} points"
+            )
+
+    def _interpolate_sections_to_common_param(self) -> None:
+        """Interpolate all sections to have the same parameter distribution.
+
+        Uses the parameter from the section with the highest number of points.
+        """
+        if len(self.sections) <= 1:
+            return  # Nothing to interpolate
+
+        # Find the section with the most points
+        max_points = 0
+        reference_param = None
+
+        for section in self.sections:
+            num_points = section.camber_line.num_points
+            if num_points > max_points:
+                max_points = num_points
+                reference_param = section.normalised_arc_length
+
+        if reference_param is None:
+            raise ValueError("Could not determine reference parameter")
+
+        # Interpolate all sections to the reference parameter
+        interpolated_sections = []
+        for section in self.sections:
+            # Interpolate section to match reference parameter
+            interpolated_section = section.interpolate(reference_param)
+            interpolated_sections.append(interpolated_section)
+
+        # Update the sections list (use object.__setattr__ for frozen dataclass)
+        object.__setattr__(self, "sections", interpolated_sections)
 
     def plot_span_wise_properties(self, figsize=(15, 10)):
         """Plot span-wise variation of blade properties."""
