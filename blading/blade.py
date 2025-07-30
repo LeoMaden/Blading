@@ -264,8 +264,6 @@ class Blade:
             upper2_3d = section2._transform_to_3d(upper2.coords)
             lower2_3d = section2._transform_to_3d(lower2.coords)
 
-            print(len(upper1_3d), len(upper2_3d))
-
             # Create surface patches between sections
             # Upper surface patches
             for j in range(len(upper1_3d) - 1):
