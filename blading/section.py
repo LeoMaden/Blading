@@ -1,11 +1,27 @@
 from dataclasses import dataclass
-from typing import Optional, Literal, Any, cast
+from typing import Optional, Any, cast
+from enum import Enum
 from geometry.curves import PlaneCurve
 from numpy.typing import NDArray
 import numpy as np
 from numpy.polynomial import Polynomial
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+
+
+class ReferencePoint(Enum):
+    """Enumeration of valid reference points for blade sections."""
+    LEADING_EDGE = "leading_edge" 
+    TRAILING_EDGE = "trailing_edge"
+    CENTROID = "centroid"
+    
+    def __str__(self) -> str:
+        return self.value
+    
+    @property
+    def display_name(self) -> str:
+        """Return a human-readable display name."""
+        return self.value.replace('_', ' ').title()
 
 
 @dataclass
@@ -15,16 +31,64 @@ class Section:
     stream_line: Optional[PlaneCurve]
     stream_distance: float = 0.0  # Distance along stream_line
     circumferential_position: float = 0.0  # y-coordinate of reference point
-    reference_point: Literal["leading_edge", "trailing_edge", "centroid"] = (
-        "leading_edge"
-    )
+    reference_point: ReferencePoint = ReferencePoint.LEADING_EDGE
 
     def __post_init__(self) -> None:
-        assert self.normalised_arc_length[0] == 0
-        assert self.normalised_arc_length[-1] == 1
-
+        self._ensure_unit_speed_camber_line()
+        self._validate_inputs()
         # Translate camber line so reference point is at origin
         self._translate_camber_line_to_origin()
+    
+    def _ensure_unit_speed_camber_line(self) -> None:
+        """Ensure the camber line is unit speed parameterized and normalized."""
+        # Check if it's unit speed and normalized using the built-in methods
+        is_unit_speed = self.camber_line.is_unit()
+        is_normalized = self.camber_line.is_normalised()
+        
+        # If not unit speed or not normalized, reparameterize
+        if not (is_normalized and is_unit_speed):
+            # Reparameterize to unit speed and normalize
+            unit_speed_curve = self.camber_line.reparameterise_unit().normalise()
+            object.__setattr__(self, 'camber_line', unit_speed_curve)
+    
+    def _validate_inputs(self) -> None:
+        """Validate input parameters for consistency and correctness."""
+        # Validate normalised arc length
+        arc_length = self.normalised_arc_length
+        if len(arc_length) < 2:
+            raise ValueError("Camber line must have at least 2 points")
+        
+        if not np.isclose(arc_length[0], 0.0, atol=1e-10):
+            raise ValueError(f"Normalised arc length must start at 0, got {arc_length[0]}")
+        
+        if not np.isclose(arc_length[-1], 1.0, atol=1e-10):
+            raise ValueError(f"Normalised arc length must end at 1, got {arc_length[-1]}")
+        
+        if not np.all(np.diff(arc_length) > 0):
+            raise ValueError("Normalised arc length must be strictly increasing")
+        
+        # Validate thickness
+        if len(self.thickness) != len(arc_length):
+            raise ValueError(
+                f"Thickness array length ({len(self.thickness)}) must match "
+                f"camber line length ({len(arc_length)})"
+            )
+        
+        if np.any(self.thickness < 0):
+            raise ValueError("Thickness values must be non-negative")
+        
+        # Validate reference point
+        if not isinstance(self.reference_point, ReferencePoint):
+            raise TypeError(f"Reference point must be a ReferencePoint enum, got {type(self.reference_point)}")
+        
+        # Validate stream line consistency if provided
+        if self.stream_line is not None:
+            if len(self.stream_line.coords) < 2:
+                raise ValueError("Stream line must have at least 2 points")
+            
+            # Check if stream line parameter is monotonic
+            if not np.all(np.diff(self.stream_line.param) > 0):
+                raise ValueError("Stream line parameter must be strictly increasing")
 
     @property
     def chord(self) -> float:
@@ -77,15 +141,16 @@ class Section:
         """Get the coordinates of the reference point on the camber line."""
         camber_coords = self.camber_line.coords
 
-        if self.reference_point == "leading_edge":
-            return camber_coords[0]
-        elif self.reference_point == "trailing_edge":
-            return camber_coords[-1]
-        elif self.reference_point == "centroid":
-            s_centroid = self._calculate_thickness_centroid()
-            return self.camber_line.interpolate([s_centroid]).coords[0]
-        else:
-            raise ValueError(f"Unknown reference point: {self.reference_point}")
+        match self.reference_point:
+            case ReferencePoint.LEADING_EDGE:
+                return camber_coords[0]
+            case ReferencePoint.TRAILING_EDGE:
+                return camber_coords[-1]
+            case ReferencePoint.CENTROID:
+                s_centroid = self._calculate_thickness_centroid()
+                return self.camber_line.interpolate([s_centroid]).coords[0]
+            case _:
+                raise ValueError(f"Unknown reference point: {self.reference_point}")
 
     def _translate_camber_line_to_origin(self) -> None:
         """Translate the camber line so the reference point is at the origin."""
@@ -443,7 +508,7 @@ class Section:
             axes = (ax1, ax2, ax3)
 
         # Add overall title with section info
-        info_text = f"Reference Point: {self.reference_point.replace('_', ' ').title()}"
+        info_text = f"Reference Point: {self.reference_point.display_name}"
         if self.stream_distance != 0.0:
             info_text += f" | Stream Distance: {self.stream_distance:.3f}"
         if self.circumferential_position != 0.0:
@@ -536,7 +601,7 @@ class Section:
                 markersize=10,
                 markeredgewidth=1,
                 label=(
-                    f'Reference point ({self.reference_point.replace("_", " ")})'
+                    f'Reference point ({self.reference_point.display_name})'
                     if show_feature_labels
                     else None
                 ),
@@ -572,18 +637,14 @@ class Section:
 
         return ax
 
-    def set_reference_point(
-        self, new_reference_point: Literal["leading_edge", "trailing_edge", "centroid"]
-    ) -> None:
+    def set_reference_point(self, new_reference_point: ReferencePoint) -> None:
         """Update the reference point of this section.
 
         Args:
             new_reference_point: The new reference point to use
         """
-        if new_reference_point not in ["leading_edge", "trailing_edge", "centroid"]:
-            raise ValueError(
-                f"Invalid reference point: {new_reference_point}. Must be one of: leading_edge, trailing_edge, centroid"
-            )
+        if not isinstance(new_reference_point, ReferencePoint):
+            raise TypeError(f"Reference point must be a ReferencePoint enum, got {type(new_reference_point)}")
 
         if new_reference_point == self.reference_point:
             return  # No change needed

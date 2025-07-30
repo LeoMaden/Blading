@@ -1,10 +1,10 @@
 from dataclasses import dataclass
-from typing import List, Literal, cast
+from typing import List, cast
 import numpy as np
 import matplotlib.pyplot as plt
 from numpy.typing import NDArray
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-from .section import Section
+from .section import Section, ReferencePoint
 from mpl_toolkits.mplot3d import Axes3D
 
 
@@ -71,9 +71,7 @@ class Blade:
         """Sort sections by their stream distance."""
         self.sections.sort(key=lambda s: s.stream_distance)
 
-    def set_all_reference_points(
-        self, reference_point: Literal["leading_edge", "trailing_edge", "centroid"]
-    ) -> None:
+    def set_all_reference_points(self, reference_point: ReferencePoint) -> None:
         """Set the reference point for all sections in the blade."""
         for section in self.sections:
             section.set_reference_point(reference_point)
@@ -88,7 +86,7 @@ class Blade:
             section.reference_point == first_ref_point for section in self.sections
         )
 
-    def get_common_reference_point(self) -> str:
+    def get_common_reference_point(self) -> ReferencePoint:
         """Get the common reference point (guaranteed to be consistent)."""
         if not self.sections:
             raise ValueError("No sections in blade")
@@ -253,6 +251,8 @@ class Blade:
             lower1_3d = section1._transform_to_3d(section1.lower_curve().coords)
             upper2_3d = section2._transform_to_3d(section2.upper_curve().coords)
             lower2_3d = section2._transform_to_3d(section2.lower_curve().coords)
+
+            print(len(upper1_3d), len(upper2_3d))
 
             # Create surface patches between sections
             # Upper surface patches
