@@ -61,6 +61,17 @@ class Section:
 
         return PlaneCurve(coords, param)
 
+    def _calculate_thickness_centroid(self) -> float:
+        """Calculate the centroid of the thickness distribution.
+
+        Returns:
+            float: Normalized arc length position of the thickness centroid.
+        """
+        x = self.normalised_arc_length
+        t = self.thickness
+        s_centroid = np.trapezoid(x * t, x) / np.trapezoid(t, x)
+        return s_centroid
+
     def _get_reference_point_coordinates(self) -> NDArray:
         """Get the coordinates of the reference point on the camber line."""
         camber_coords = self.camber_line.coords
@@ -70,7 +81,8 @@ class Section:
         elif self.reference_point == "trailing_edge":
             return camber_coords[-1]
         elif self.reference_point == "centroid":
-            return np.mean(camber_coords, axis=0)
+            s_centroid = self._calculate_thickness_centroid()
+            return self.camber_line.interpolate([s_centroid]).coords[0]
         else:
             raise ValueError(f"Unknown reference point: {self.reference_point}")
 
@@ -90,6 +102,7 @@ class Section:
 
         # Store the translation that was applied (y-coordinate of reference point)
         self.circumferential_position = reference_coords[1]
+        self.stream_distance = reference_coords[0]
 
     def _signed_thickness(self) -> NDArray:
         normal = self.camber_line.signed_normal().coords
@@ -214,7 +227,7 @@ class Section:
 
         ax.set_xlabel("x")
         ax.set_ylabel("y")
-        ax.set_aspect("equal")
+        ax.axis("equal")
         ax.grid(True, alpha=0.3)
         ax.legend()
         ax.set_title("Section Shape")
@@ -239,8 +252,20 @@ class Section:
             *plot_args,
             **plot_kwargs,
         )
+
+        # Add centroid visualization
+        s_centroid = self._calculate_thickness_centroid()
+        ax.axvline(
+            s_centroid,
+            color="red",
+            linestyle="--",
+            alpha=0.7,
+            label="Thickness centroid",
+        )
+
         ax.set_xlabel("Normalised arc length")
         ax.set_ylabel("Thickness / chord")
+        ax.legend()
 
     def plot_nondim_camber(self, ax=None, *plot_args, **plot_kwargs):
         if ax is None:
@@ -259,7 +284,9 @@ class Section:
 
         if has_streamline:
             # 2x2 grid: section and meridional on top, thickness and camber on bottom
-            fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=figsize)
+            fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(
+                2, 2, figsize=figsize, layout="constrained"
+            )
 
             # Top row: Section shape and meridional streamline
             self.plot_section(ax=ax1, show_camber_line=True)
@@ -278,7 +305,9 @@ class Section:
             axes = ((ax1, ax2), (ax3, ax4))
         else:
             # 1x3 grid: original layout when no streamline
-            fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 5))
+            fig, (ax1, ax2, ax3) = plt.subplots(
+                1, 3, figsize=(15, 5), layout="constrained"
+            )
 
             self.plot_section(ax=ax1, show_camber_line=True)
             ax1.set_title("Section Shape")
@@ -301,7 +330,6 @@ class Section:
             )
 
         fig.suptitle(f"Section Summary\n{info_text}", fontsize=14)
-        # plt.tight_layout()
 
         return fig, axes
 
@@ -332,19 +360,25 @@ class Section:
             **plot_kwargs,
         )
 
-        # Get key points along the stream line
-        # Assuming the stream line parameter corresponds to the blade extent
-        le_idx = 0  # Leading edge at start
-        te_idx = -1  # Trailing edge at end
+        # Map blade section key points to stream line using m-coordinate (distance along stream line)
+        # Since camber line is translated to put reference point at origin, need to add back stream_distance
 
-        # Find reference point index based on normalized arc length
-        ref_s = self._get_reference_point_normalized_arc_length()
-        ref_idx = np.argmin(np.abs(self.stream_line.param - ref_s))
+        # Calculate m-coordinates for key points
+        le_m = self.camber_line.coords[0, 0] + self.stream_distance  # Leading edge
+        te_m = self.camber_line.coords[-1, 0] + self.stream_distance  # Trailing edge
+        ref_m = (
+            self.stream_distance
+        )  # Reference point (at origin in camber line coords)
+
+        # Interpolate stream line at these m-coordinates to get (x, r) positions
+        le_pos = self.stream_line.interpolate([le_m])
+        te_pos = self.stream_line.interpolate([te_m])
+        ref_pos = self.stream_line.interpolate([ref_m])
 
         # Highlight leading edge
         ax.plot(
-            stream_coords[le_idx, 0],
-            stream_coords[le_idx, 1],
+            le_pos.coords[0, 0],
+            le_pos.coords[0, 1],
             "go",
             markersize=8,
             label="Leading edge",
@@ -352,8 +386,8 @@ class Section:
 
         # Highlight trailing edge
         ax.plot(
-            stream_coords[te_idx, 0],
-            stream_coords[te_idx, 1],
+            te_pos.coords[0, 0],
+            te_pos.coords[0, 1],
             "ro",
             markersize=8,
             label="Trailing edge",
@@ -361,8 +395,8 @@ class Section:
 
         # Highlight reference point with x marker
         ax.plot(
-            stream_coords[ref_idx, 0],
-            stream_coords[ref_idx, 1],
+            ref_pos.coords[0, 0],
+            ref_pos.coords[0, 1],
             "bx",
             markersize=10,
             markeredgewidth=1,
@@ -370,7 +404,7 @@ class Section:
         )
 
         # Show total extent with vertical lines
-        x_min, x_max = stream_coords[le_idx, 0], stream_coords[te_idx, 0]
+        x_min, x_max = le_pos.coords[0, 0], te_pos.coords[0, 0]
         r_range = stream_coords[:, 1]
         r_min, r_max = np.min(r_range), np.max(r_range)
 
@@ -397,16 +431,31 @@ class Section:
 
         return ax
 
-    def _get_reference_point_normalized_arc_length(self) -> float:
-        """Get the normalized arc length position of the reference point."""
-        if self.reference_point == "leading_edge":
-            return 0.0
-        elif self.reference_point == "trailing_edge":
-            return 1.0
-        elif self.reference_point == "centroid":
-            return 0.5
-        else:
-            raise ValueError(f"Unknown reference point: {self.reference_point}")
+    def set_reference_point(
+        self, new_reference_point: Literal["leading_edge", "trailing_edge", "centroid"]
+    ) -> None:
+        """Update the reference point of this section.
+
+        Args:
+            new_reference_point: The new reference point to use
+        """
+        if new_reference_point not in ["leading_edge", "trailing_edge", "centroid"]:
+            raise ValueError(
+                f"Invalid reference point: {new_reference_point}. Must be one of: leading_edge, trailing_edge, centroid"
+            )
+
+        if new_reference_point == self.reference_point:
+            return  # No change needed
+
+        # First, translate back to original position
+        camber_coords = self.camber_line.coords
+        camber_coords += np.c_[self.stream_distance, self.circumferential_position]
+
+        # Update reference point
+        self.reference_point = new_reference_point
+
+        # Re-translate to origin with new reference point
+        self._translate_camber_line_to_origin()
 
 
 @dataclass(frozen=True)
