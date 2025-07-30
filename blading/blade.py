@@ -98,36 +98,139 @@ class Blade:
         
         return np.array(thicknesses)
     
-    def plot_blade_3d(self, ax=None, show_camber: bool = True):
-        """Plot the blade in 3D showing all sections."""
+    def plot_blade_3d(self, ax=None, show_camber: bool = True, use_stream_coords: bool = True, alpha=0.7):
+        """Plot the blade in 3D showing all sections.
+        
+        Args:
+            ax: Matplotlib 3D axis to plot on
+            show_camber: Whether to show camber lines
+            use_stream_coords: If True, use stream line coordinates for proper 3D positioning.
+                              If False, use simple span-wise positioning.
+            alpha: Transparency for the plotted lines
+        """
         if ax is None:
             fig = plt.figure(figsize=(12, 8))
             ax = fig.add_subplot(111, projection='3d')
         
-        for section in self.sections:
-            y_pos = section.circumferential_position
+        if use_stream_coords:
+            # Use proper stream line coordinates for 3D plotting
+            sections_with_streamlines = [s for s in self.sections if s.stream_line is not None]
             
-            # Plot upper and lower surfaces
-            upper = section.upper_curve()
-            lower = section.lower_curve()
+            if not sections_with_streamlines:
+                ax.text(0.5, 0.5, 0.5, 'No sections with stream lines available for 3D plotting', 
+                       ha='center', va='center', transform=ax.transAxes)
+                return ax
             
-            ax.plot(upper.coords[:, 0], [y_pos] * len(upper.coords), upper.coords[:, 1], 
-                   'b-', alpha=0.7, linewidth=1)
-            ax.plot(lower.coords[:, 0], [y_pos] * len(lower.coords), lower.coords[:, 1], 
-                   'r-', alpha=0.7, linewidth=1)
+            # Plot each section in 3D using stream coordinates
+            for i, section in enumerate(sections_with_streamlines):
+                # Only show labels for first section to avoid clutter
+                show_labels = (i == 0)
+                
+                upper_label = "Upper surfaces" if show_labels else None
+                lower_label = "Lower surfaces" if show_labels else None
+                camber_label = "Camber lines" if show_labels else None
+                
+                section.plot_section_3d(
+                    ax=ax, 
+                    show_camber_line=show_camber,
+                    alpha=alpha,
+                    upper_label=upper_label,
+                    lower_label=lower_label,
+                    camber_label=camber_label
+                )
             
-            # Optionally plot camber line
-            if show_camber:
-                camber = section.camber_line
-                ax.plot(camber.coords[:, 0], [y_pos] * len(camber.coords), camber.coords[:, 1], 
-                       'k--', alpha=0.5, linewidth=0.5)
-        
-        ax.set_xlabel('x (chord direction)')
-        ax.set_ylabel('y (span direction)')
-        ax.set_zlabel('z (thickness direction)')  # type: ignore
-        ax.set_title(f'Blade 3D View ({self.num_sections} sections)')
+            # Add surface filling between sections
+            self._add_surface_fill(ax, sections_with_streamlines, alpha=alpha/2)
+            
+            ax.set_xlabel('x (axial)')
+            ax.set_ylabel('y')
+            ax.set_zlabel('z')
+            ax.set_title(f'Blade 3D View - Stream Coordinates ({len(sections_with_streamlines)} sections)')
+            
+            # Set equal aspect ratio for 3D plot
+            ax.axis("equal")
+            
+            # Set default camera view to look in xy plane
+            ax.view_init(elev=90, azim=-90)
+            
+        else:
+            # Original simple span-wise plotting
+            for section in self.sections:
+                y_pos = section.circumferential_position
+                
+                # Plot upper and lower surfaces
+                upper = section.upper_curve()
+                lower = section.lower_curve()
+                
+                ax.plot(upper.coords[:, 0], [y_pos] * len(upper.coords), upper.coords[:, 1], 
+                       'b-', alpha=alpha, linewidth=1)
+                ax.plot(lower.coords[:, 0], [y_pos] * len(lower.coords), lower.coords[:, 1], 
+                       'r-', alpha=alpha, linewidth=1)
+                
+                # Optionally plot camber line
+                if show_camber:
+                    camber = section.camber_line
+                    ax.plot(camber.coords[:, 0], [y_pos] * len(camber.coords), camber.coords[:, 1], 
+                           'k--', alpha=0.5, linewidth=0.5)
+            
+            ax.set_xlabel('x (chord direction)')
+            ax.set_ylabel('y (span direction)')
+            ax.set_zlabel('z (thickness direction)')
+            ax.set_title(f'Blade 3D View ({self.num_sections} sections)')
+            
+            # Set equal aspect ratio for 3D plot
+            ax.axis("equal")
+            
+            # Set default camera view to look in xy plane
+            ax.view_init(elev=90, azim=-90)
         
         return ax
+    
+    def _add_surface_fill(self, ax, sections, alpha=0.3):
+        """Add surface patches between blade sections for better visualization."""
+        if len(sections) < 2:
+            return
+            
+        for i in range(len(sections) - 1):
+            section1 = sections[i]
+            section2 = sections[i + 1]
+            
+            # Get 3D coordinates for both sections
+            upper1_3d = section1._transform_to_3d(section1.upper_curve().coords)
+            lower1_3d = section1._transform_to_3d(section1.lower_curve().coords)
+            upper2_3d = section2._transform_to_3d(section2.upper_curve().coords)
+            lower2_3d = section2._transform_to_3d(section2.lower_curve().coords)
+            
+            # Create surface patches between sections
+            # Upper surface patches
+            for j in range(len(upper1_3d) - 1):
+                # Create quadrilateral patch
+                vertices = [
+                    upper1_3d[j],
+                    upper1_3d[j + 1], 
+                    upper2_3d[j + 1],
+                    upper2_3d[j]
+                ]
+                
+                from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+                
+                # Add upper surface patch
+                ax.add_collection3d(Poly3DCollection([vertices], alpha=alpha, 
+                                                   facecolors='lightblue', edgecolors='none'))
+            
+            # Lower surface patches  
+            for j in range(len(lower1_3d) - 1):
+                # Create quadrilateral patch
+                vertices = [
+                    lower1_3d[j],
+                    lower1_3d[j + 1],
+                    lower2_3d[j + 1], 
+                    lower2_3d[j]
+                ]
+                
+                # Add lower surface patch
+                ax.add_collection3d(Poly3DCollection([vertices], alpha=alpha,
+                                                   facecolors='lightcoral', edgecolors='none'))
     
     def plot_span_wise_properties(self, figsize=(15, 10)):
         """Plot span-wise variation of blade properties."""

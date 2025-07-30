@@ -194,7 +194,7 @@ class Section:
 
         # Extract custom labels if provided, otherwise use defaults
         upper_label = plot_kwargs.pop("upper_label", "Upper surface")
-        lower_label = plot_kwargs.pop("lower_label", "Lower surface") 
+        lower_label = plot_kwargs.pop("lower_label", "Lower surface")
         camber_label = plot_kwargs.pop("camber_label", "Camber line")
 
         # Get upper and lower curves
@@ -282,6 +282,89 @@ class Section:
         ax.set_xlabel("Normalised arc length")
         ax.set_ylabel("Non-dimensional camber")
 
+    def plot_section_3d(self, ax=None, show_camber_line=True, alpha=0.7, **plot_kwargs):
+        """Plot the section in 3D using stream line coordinates.
+        
+        Transforms section coordinates from (m, c) to (x, y, z) cartesian coordinates:
+        - m: stream line distance 
+        - c: circumferential distance (r * theta)
+        - Uses stream_line to project onto (x, r) coordinates
+        - Converts to cartesian (x, y, z) where y = r*cos(theta), z = r*sin(theta)
+        """
+        if self.stream_line is None:
+            raise ValueError("No stream line available for 3D plotting")
+            
+        if ax is None:
+            fig = plt.figure(figsize=(10, 8))
+            ax = fig.add_subplot(111, projection='3d')
+        
+        # Get upper and lower curves in (m, c) coordinates
+        upper = self.upper_curve()
+        lower = self.lower_curve()
+        
+        # Transform to 3D coordinates
+        upper_3d = self._transform_to_3d(upper.coords)
+        lower_3d = self._transform_to_3d(lower.coords)
+        
+        # Extract custom labels before using plot_kwargs
+        upper_label = plot_kwargs.pop("upper_label", "Upper surface")
+        lower_label = plot_kwargs.pop("lower_label", "Lower surface")
+        camber_label = plot_kwargs.pop("camber_label", "Camber line")
+        
+        # Plot upper and lower surfaces
+        ax.plot(upper_3d[:, 0], upper_3d[:, 1], upper_3d[:, 2], 
+               'b-', alpha=alpha, label=upper_label, **plot_kwargs)
+        ax.plot(lower_3d[:, 0], lower_3d[:, 1], lower_3d[:, 2], 
+               'r-', alpha=alpha, label=lower_label, **plot_kwargs)
+        
+        # Optionally plot camber line
+        if show_camber_line:
+            camber_3d = self._transform_to_3d(self.camber_line.coords)
+            ax.plot(camber_3d[:, 0], camber_3d[:, 1], camber_3d[:, 2], 
+                   'k--', alpha=0.5, label=camber_label)
+        
+        ax.set_xlabel('x (axial)')
+        ax.set_ylabel('y')
+        ax.set_zlabel('z')
+        ax.set_title('Section 3D View')
+        ax.legend()
+        
+        # Set equal aspect ratio for 3D plot
+        ax.axis("equal")
+        
+        # Set default camera view to look in xy plane
+        ax.view_init(elev=90, azim=-90)
+        
+        return ax
+    
+    def _transform_to_3d(self, mc_coords):
+        """Transform (m, c) coordinates to (x, y, z) cartesian coordinates.
+        
+        Args:
+            mc_coords: Array of (m, c) coordinates where:
+                - m is stream line distance
+                - c is circumferential distance (r * theta)
+        
+        Returns:
+            Array of (x, y, z) cartesian coordinates
+        """
+        m_coords = mc_coords[:, 0] + self.stream_distance  # Add back stream distance offset
+        c_coords = mc_coords[:, 1] + self.circumferential_position  # Add back circumferential offset
+        
+        # Interpolate stream line to get (x, r) coordinates for each m
+        stream_points = self.stream_line.interpolate(m_coords)
+        x_coords = stream_points.coords[:, 0]
+        r_coords = stream_points.coords[:, 1]
+        
+        # Calculate theta from c = r * theta
+        theta_coords = c_coords / r_coords
+        
+        # Convert to cartesian coordinates
+        y_coords = r_coords * np.cos(theta_coords)
+        z_coords = r_coords * np.sin(theta_coords)
+        
+        return np.column_stack([x_coords, y_coords, z_coords])
+
     def plot_summary(self, figsize=(12, 8)):
         """Plot a comprehensive summary of the section including shape, thickness/chord, camber, and meridional streamline if available."""
         # Determine layout based on whether stream line is available
@@ -338,7 +421,15 @@ class Section:
 
         return fig, axes
 
-    def plot_meridional_streamline(self, ax=None, show_extent=True, show_features=True, show_feature_labels=True, *plot_args, **plot_kwargs):
+    def plot_meridional_streamline(
+        self,
+        ax=None,
+        show_extent=True,
+        show_features=True,
+        show_feature_labels=True,
+        *plot_args,
+        **plot_kwargs,
+    ):
         """Plot the stream line in the meridional (x, r) plane with key features highlighted.
 
         Highlights:
@@ -410,16 +501,22 @@ class Section:
                 "bx",
                 markersize=10,
                 markeredgewidth=1,
-                label=f'Reference point ({self.reference_point.replace("_", " ")})' if show_feature_labels else None,
+                label=(
+                    f'Reference point ({self.reference_point.replace("_", " ")})'
+                    if show_feature_labels
+                    else None
+                ),
             )
 
         # Conditionally show extent lines
         if show_extent:
             # Show total extent with vertical lines
             x_min, x_max = le_pos.coords[0, 0], te_pos.coords[0, 0]
-            
+
             # Vertical lines showing blade extent
-            ax.axvline(x_min, color="gray", linestyle="--", alpha=0.5, label="Blade extent")
+            ax.axvline(
+                x_min, color="gray", linestyle="--", alpha=0.5, label="Blade extent"
+            )
             ax.axvline(x_max, color="gray", linestyle="--", alpha=0.5)
 
         # # Add extent annotation
