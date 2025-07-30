@@ -192,6 +192,11 @@ class Section:
         if ax is None:
             _, ax = plt.subplots()
 
+        # Extract custom labels if provided, otherwise use defaults
+        upper_label = plot_kwargs.pop("upper_label", "Upper surface")
+        lower_label = plot_kwargs.pop("lower_label", "Lower surface") 
+        camber_label = plot_kwargs.pop("camber_label", "Camber line")
+
         # Get upper and lower curves
         upper = self.upper_curve()
         lower = self.lower_curve()
@@ -201,7 +206,7 @@ class Section:
             upper.coords[:, 0],
             upper.coords[:, 1],
             "b-",
-            label="Upper surface",
+            label=upper_label,
             *plot_args,
             **plot_kwargs,
         )
@@ -209,7 +214,7 @@ class Section:
             lower.coords[:, 0],
             lower.coords[:, 1],
             "r-",
-            label="Lower surface",
+            label=lower_label,
             *plot_args,
             **plot_kwargs,
         )
@@ -222,7 +227,7 @@ class Section:
                 camber_coords[:, 1],
                 "k--",
                 alpha=0.7,
-                label="Camber line",
+                label=camber_label,
             )
 
         ax.set_xlabel("x")
@@ -333,7 +338,7 @@ class Section:
 
         return fig, axes
 
-    def plot_meridional_streamline(self, ax=None, *plot_args, **plot_kwargs):
+    def plot_meridional_streamline(self, ax=None, show_extent=True, show_features=True, show_feature_labels=True, *plot_args, **plot_kwargs):
         """Plot the stream line in the meridional (x, r) plane with key features highlighted.
 
         Highlights:
@@ -348,6 +353,9 @@ class Section:
         if ax is None:
             _, ax = plt.subplots()
 
+        # Extract custom label if provided, otherwise use default
+        custom_label = plot_kwargs.pop("label", "Stream line")
+
         # Plot the stream line
         stream_coords = self.stream_line.coords
         ax.plot(
@@ -355,7 +363,7 @@ class Section:
             stream_coords[:, 1],
             "k-",
             linewidth=2,
-            label="Stream line",
+            label=custom_label,
             *plot_args,
             **plot_kwargs,
         )
@@ -375,42 +383,44 @@ class Section:
         te_pos = self.stream_line.interpolate([te_m])
         ref_pos = self.stream_line.interpolate([ref_m])
 
-        # Highlight leading edge
-        ax.plot(
-            le_pos.coords[0, 0],
-            le_pos.coords[0, 1],
-            "go",
-            markersize=8,
-            label="Leading edge",
-        )
+        # Conditionally highlight features
+        if show_features:
+            # Highlight leading edge
+            ax.plot(
+                le_pos.coords[0, 0],
+                le_pos.coords[0, 1],
+                "go",
+                markersize=8,
+                label="Leading edge" if show_feature_labels else None,
+            )
 
-        # Highlight trailing edge
-        ax.plot(
-            te_pos.coords[0, 0],
-            te_pos.coords[0, 1],
-            "ro",
-            markersize=8,
-            label="Trailing edge",
-        )
+            # Highlight trailing edge
+            ax.plot(
+                te_pos.coords[0, 0],
+                te_pos.coords[0, 1],
+                "ro",
+                markersize=8,
+                label="Trailing edge" if show_feature_labels else None,
+            )
 
-        # Highlight reference point with x marker
-        ax.plot(
-            ref_pos.coords[0, 0],
-            ref_pos.coords[0, 1],
-            "bx",
-            markersize=10,
-            markeredgewidth=1,
-            label=f'Reference point ({self.reference_point.replace("_", " ")})',
-        )
+            # Highlight reference point with x marker
+            ax.plot(
+                ref_pos.coords[0, 0],
+                ref_pos.coords[0, 1],
+                "bx",
+                markersize=10,
+                markeredgewidth=1,
+                label=f'Reference point ({self.reference_point.replace("_", " ")})' if show_feature_labels else None,
+            )
 
-        # Show total extent with vertical lines
-        x_min, x_max = le_pos.coords[0, 0], te_pos.coords[0, 0]
-        r_range = stream_coords[:, 1]
-        r_min, r_max = np.min(r_range), np.max(r_range)
-
-        # Vertical lines showing blade extent
-        ax.axvline(x_min, color="gray", linestyle="--", alpha=0.5, label="Blade extent")
-        ax.axvline(x_max, color="gray", linestyle="--", alpha=0.5)
+        # Conditionally show extent lines
+        if show_extent:
+            # Show total extent with vertical lines
+            x_min, x_max = le_pos.coords[0, 0], te_pos.coords[0, 0]
+            
+            # Vertical lines showing blade extent
+            ax.axvline(x_min, color="gray", linestyle="--", alpha=0.5, label="Blade extent")
+            ax.axvline(x_max, color="gray", linestyle="--", alpha=0.5)
 
         # # Add extent annotation
         # ax.annotate(
