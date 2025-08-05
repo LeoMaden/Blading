@@ -95,6 +95,85 @@ class Thickness:
         ax.grid(True)
         return ax
 
+    def with_blunt_TE(self) -> "Thickness":
+        # Mask for the rear section of the blade.
+        mask_rear = self.s >= 0.8
+
+        # Calculate curvature (second derivative of thickness)
+        grad = np.gradient(self.t, self.s)
+        curv = np.gradient(grad, self.s)  # Second derivative (curvature)
+
+        # Find local minima of curvature in the rear section
+        rear_indices = np.where(mask_rear)[0]
+        curv_rear = curv[rear_indices]
+        local_minima = []
+        for i in range(1, len(curv_rear) - 1):
+            if curv_rear[i] < curv_rear[i - 1] and curv_rear[i] < curv_rear[i + 1]:
+                local_minima.append(rear_indices[i])
+
+        if local_minima:
+            # Use the last local minimum
+            last_min_idx = local_minima[-1]
+            # All points after the last local minimum form the high curvature mask
+            mask_high_curv = np.arange(len(self.s)) > last_min_idx
+        else:
+            # No local minima found, use all rear points as high curvature
+            mask_high_curv = mask_rear.copy()
+
+        # Fit straight line through linear part of thickness
+        mask_linear = mask_rear & ~mask_high_curv  # linear part
+        mask_round_TE = mask_rear & mask_high_curv  # round part
+
+        if not np.any(mask_linear):
+            # No linear part found, return original thickness
+            return Thickness(self.s.copy(), self.t.copy())
+
+        poly = Polynomial.fit(self.s[mask_linear], self.t[mask_linear], deg=1)
+
+        # Ensure new TE has continuous value.
+        linear_indices = np.where(mask_linear)[0]
+        if len(linear_indices) > 0:
+            y1 = self.t[linear_indices[-1]]
+            y2 = poly(self.s[linear_indices[-1]])
+            poly -= y2 - y1
+
+        # Create new thickness array
+        new_t = self.t.copy()
+        # Extrapolate straight line to TE
+        new_t[mask_round_TE] = poly(self.s[mask_round_TE])
+
+        return Thickness(self.s.copy(), new_t)
+
+    def add_round_TE(self, chord: float = 1) -> "Thickness":
+        # Thickness relative to chord.
+        t_over_c = self.t / chord
+
+        # Find trailing edge angle.
+        x1, x2 = self.s[[-2, -1]]
+        y1, y2 = t_over_c[[-2, -1]]
+        tan_angle_TE = (y1 - y2) / (x2 - x1)
+
+        # Trailing edge thickness.
+        t_TE = t_over_c[-1]
+
+        # Analytical formula for round TE tangent to linear section.
+        a = np.arctan(0.5 * tan_angle_TE)
+        b = 2 * np.cos(a) - (1 - np.sin(a)) * tan_angle_TE
+        rad_TE = t_TE / b
+
+        # Create points on round TE and interpolate given `s` distribution.
+        pts = np.linspace(a, np.pi / 2, 70)
+        x_te = 1 - rad_TE + rad_TE * np.sin(pts)
+        y_te = 2 * rad_TE * np.cos(pts)
+        mask_round_TE = self.s > min(x_te)
+
+        # Create new thickness array
+        new_t_over_c = t_over_c.copy()
+        new_t_over_c[mask_round_TE] = np.interp(self.s[mask_round_TE], x_te, y_te)
+        new_t = new_t_over_c * chord
+
+        return Thickness(self.s.copy(), new_t)
+
 
 @dataclass
 class LECircle:
