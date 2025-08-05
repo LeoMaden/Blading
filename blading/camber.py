@@ -139,9 +139,9 @@ class FitCamberResult:
             ax.plot(
                 self.t_star[[0, 3, 6]],
                 self.coefs[[0, 3, 6]],
-                "go",
+                "go--",
                 markersize=8,
-                label="DCA Control point",
+                label="DCA Control points",
             )
             ax.plot(
                 self.t_star[[1, 2, 4, 5]],
