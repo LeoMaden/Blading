@@ -736,14 +736,3 @@ class Section:
             circumferential_position=self.circumferential_position,
             reference_point=self.reference_point,
         )
-
-
-@dataclass(frozen=True)
-class FlatSection:
-    curve: PlaneCurve
-    stream_line: Optional[PlaneCurve]
-
-
-@dataclass(frozen=True)
-class FlatBlade:
-    sections: list[FlatSection]
