@@ -1,3 +1,4 @@
+from typing import Literal
 import matplotlib.pyplot as plt
 from dataclasses import dataclass
 from geometry.curves import PlaneCurve
@@ -8,27 +9,6 @@ from scipy.interpolate import (
     BSpline,
 )
 from scipy.optimize import minimize
-
-
-@dataclass
-class Camber:
-    line: PlaneCurve
-
-    def __post_init__(self):
-        line = self.line
-
-        # Ensure the curve has constant speed (arc length) parameterisation and
-        # is normalised.
-        if not line.is_unit():
-            line = line.reparameterise_unit()
-        if not line.is_normalised():
-            line = line.normalise()
-
-        self.line = line
-
-    @property
-    def s(self) -> NDArray:
-        return self.line.param  # This is correct since the curve is normalised.
 
 
 @dataclass
@@ -44,17 +24,10 @@ class CamberMetalAngles:
     TE: float  # Trailing edge angle
 
 
-##################################################
-
-
 @dataclass
-class CamberParams:
-    angle_LE: float
-    angle_TE: float
-    chord: float
-
-    ss_turning: float
-    ss_chord: float
+class CamberNonDimParams:
+    ss_turning_frac: float
+    ss_chord_frac: float
     alpha: float = 0.8
     beta: float = 0.3
     ss_scale: tuple[float, float] = (1, 1)
@@ -62,20 +35,50 @@ class CamberParams:
 
 
 @dataclass
-class _Camber:
-    s: NDArray
-    non_dim: NDArray
-    angle: NDArray
-    curve: PlaneCurve
+class CamberParams:
+    angles: CamberMetalAngles
+    stacking: CamberStackingParams
+    non_dim: CamberNonDimParams
 
-    @staticmethod
-    def from_camber_line(curve: PlaneCurve):
-        s = curve.param
-        angle = curve.turning_angle()
-        non_dim = (angle - angle[0]) / (angle[-1] - angle[0])
-        return Camber(s, non_dim, angle, curve)
 
-    def plot_non_dimensional(self, ax=None, *plot_args, **plot_kwargs):
+@dataclass
+class NonDimCamberSplineResult:
+    spline: BSpline
+    t_star: NDArray
+    coefs: NDArray
+
+
+@dataclass
+class Camber:
+    line: PlaneCurve
+
+    def __post_init__(self):
+        # Ensure the curve has constant speed (arc length) parameterisation and
+        # is normalised.
+        line = self.line
+        if not line.is_unit():
+            line = line.reparameterise_unit()
+        if not line.is_normalised():
+            line = line.normalise()
+
+        self.line = line
+
+    @property
+    def s(self) -> NDArray:
+        return self.line.param  # This is correct since the curve is normalised.
+
+    @property
+    def non_dim(self) -> NDArray:
+        """Non-dimensional camber line."""
+        angle = self.line.turning_angle()
+        return (angle - angle[0]) / (angle[-1] - angle[0])
+
+    @property
+    def angle(self) -> NDArray:
+        """Turning angle of the camber line."""
+        return self.line.turning_angle()
+
+    def plot_non_dim(self, ax=None, *plot_args, **plot_kwargs):
         if ax is None:
             _, ax = plt.subplots()
         ax.plot(self.s, self.non_dim, *plot_args, **plot_kwargs)
@@ -84,7 +87,7 @@ class _Camber:
         ax.grid(True)
         return ax
 
-    def plot_angle_distribution(self, ax=None, *plot_args, **plot_kwargs):
+    def plot_angle(self, ax=None, *plot_args, **plot_kwargs):
         if ax is None:
             _, ax = plt.subplots()
         ax.plot(self.s, np.degrees(self.angle), *plot_args, **plot_kwargs)
@@ -94,7 +97,7 @@ class _Camber:
         return ax
 
 
-def _dca_camber(ss_turning: float, ss_chord: float) -> BSpline:
+def _dca_camber_spline(ss_turning: float, ss_chord: float) -> BSpline:
     return make_interp_spline(
         [0, ss_chord, 1],
         [0, ss_turning, 1],
@@ -102,17 +105,27 @@ def _dca_camber(ss_turning: float, ss_chord: float) -> BSpline:
     )
 
 
+##################################################
+
+
 @dataclass
-class CamberResult:
+class FitCamberResult:
     non_dim_spline: BSpline
     params: CamberParams
+    t_star: NDArray
+    coefs: NDArray
 
     def create_camber_line(self, s: NDArray) -> PlaneCurve:
         non_dim = self.non_dim_spline(s)
-        return create_camber(non_dim, s, self.params)
+        return create_camber(non_dim, s, self.params.angles, self.params.stacking)
 
     def plot_non_dim_spline(
-        self, s: NDArray = None, ax=None, *plot_args, **plot_kwargs
+        self,
+        s: NDArray | None = None,
+        ax=None,
+        show_control_points: bool = True,
+        *plot_args,
+        **plot_kwargs,
     ):
         if s is None:
             s = np.linspace(0, 1, 100)
@@ -121,24 +134,50 @@ class CamberResult:
 
         non_dim = self.non_dim_spline(s)
         ax.plot(s, non_dim, *plot_args, **plot_kwargs)
+
+        if show_control_points:
+            ax.plot(
+                self.t_star[[0, 3, 6]],
+                self.coefs[[0, 3, 6]],
+                "go",
+                markersize=8,
+                label="DCA Control point",
+            )
+            ax.plot(
+                self.t_star[[1, 2, 4, 5]],
+                self.coefs[[1, 2, 4, 5]],
+                "bo",
+                markersize=4,
+                label="Camber style control points",
+            )
+
         ax.set_xlabel("Normalised arc length")
         ax.set_ylabel("Non-dimensional camber")
         ax.grid(True)
+        if show_control_points:
+            ax.legend()
         return ax
 
     def plot_camber_comparison(self, original_camber: Camber, ax=None):
         if ax is None:
             _, ax = plt.subplots()
 
-        original_camber.plot_non_dimensional(ax, "k-", label="Original")
-        self.plot_non_dim_spline(original_camber.s, ax, "r--", label="Fitted")
+        original_camber.plot_non_dim(ax, "k-", label="Original")
+        self.plot_non_dim_spline(
+            original_camber.s,
+            ax,
+            show_control_points=True,
+            label="Fitted",
+            linestyle="--",
+            color="r",
+        )
         ax.legend()
         return ax
 
 
-def create_non_dim_camber(p: CamberParams) -> BSpline:
+def create_non_dim_camber_spline(p: CamberNonDimParams) -> NonDimCamberSplineResult:
     # Set position of interior knots.
-    xj = p.ss_chord
+    xj = p.ss_chord_frac
     t6 = (3 * xj - p.beta) / (2 + p.alpha - p.beta)
     t5 = p.alpha * t6
     t7 = t6 + p.beta * (1 - t6)
@@ -156,7 +195,7 @@ def create_non_dim_camber(p: CamberParams) -> BSpline:
     t_star = np.r_[0, x_ss1, x_ss2, xj, x_sb1, x_sb2, 1]
 
     # DCA distribution.
-    dca_spline = _dca_camber(p.ss_turning, p.ss_chord)
+    dca_spline = _dca_camber_spline(p.ss_turning_frac, p.ss_chord_frac)
     coefs = dca_spline(t_star)
 
     # Adjust coefficients.
@@ -167,76 +206,69 @@ def create_non_dim_camber(p: CamberParams) -> BSpline:
 
     spline = BSpline(knots, coefs, k=3)
 
-    return spline
+    return NonDimCamberSplineResult(spline, t_star, coefs)
 
 
-def create_camber(non_dim: NDArray, s: NDArray, p: CamberParams):
-    angle = non_dim * (p.angle_TE - p.angle_LE) + p.angle_LE
+def create_camber(
+    non_dim: NDArray,
+    s: NDArray,
+    angles: CamberMetalAngles,
+    stacking: CamberStackingParams,
+) -> PlaneCurve:
+    angle = non_dim * (angles.TE - angles.LE) + angles.LE
     camber_line = PlaneCurve.from_angle(angle, s)
-    camber_line *= p.chord
-    return camber_line
+    camber_line *= stacking.chord
+    # Apply offsets by translating the curve
+    translated_points = camber_line.coords.copy()
+    translated_points[0] += stacking.x_offset
+    translated_points[1] += stacking.y_offset
+    return PlaneCurve(translated_points, camber_line.param)
 
 
-# TEMP: remove section type to prevent circular import for now
-def fit_camber(sec, plot_intermediate=False) -> CamberResult:
-    camber = Camber.from_camber_line(sec.camber_line)
+def fit_camber(camber: Camber, plot_intermediate: bool = False) -> FitCamberResult:
     s = camber.s
     non_dim = camber.non_dim
-    chord = camber.curve.length()
+    chord = camber.line.length()
     angle = camber.angle
+    LE_coords = camber.line.start()
 
     x0 = [0.5, 0.5, 1, 1, 1, 1]
 
-    def params(x):
+    def create_params(x) -> CamberParams:
         return CamberParams(
-            angle_LE=angle[0],
-            angle_TE=angle[-1],
-            chord=chord,
-            ss_turning=x[0],
-            ss_chord=x[1],
-            ss_scale=(x[2], x[3]),
-            sb_scale=(x[4], x[5]),
+            angles=CamberMetalAngles(LE=angle[0], TE=angle[-1]),
+            stacking=CamberStackingParams(
+                chord=chord, x_offset=LE_coords[0], y_offset=LE_coords[1]
+            ),
+            non_dim=CamberNonDimParams(
+                ss_turning_frac=x[0],
+                ss_chord_frac=x[1],
+                ss_scale=(x[2], x[3]),
+                sb_scale=(x[4], x[5]),
+            ),
         )
 
-    def create(x):
-        p = params(x)
-        return create_non_dim_camber(p)(s)
+    def create_spline(x) -> NDArray:
+        p = create_params(x)
+        return create_non_dim_camber_spline(p.non_dim).spline(s)
 
-    def err(x):
-        non_dim_fit = create(x)
-        return np.trapezoid((non_dim - non_dim_fit) ** 2, s)
+    def objective(x) -> float:
+        non_dim_fit = create_spline(x)
+        return float(np.trapezoid((non_dim - non_dim_fit) ** 2, s))
 
-    constraints = [
-        {"type": "ineq", "fun": lambda x: x[0]},
-        {"type": "ineq", "fun": lambda x: x[1]},
-        {"type": "ineq", "fun": lambda x: 0.5 - x[0]},
-        {"type": "ineq", "fun": lambda x: 0.4 - x[1]},
-        {"type": "ineq", "fun": lambda x: -x[2]},
-        {"type": "ineq", "fun": lambda x: x[4] - x[3] - 0.1},
-        {"type": "ineq", "fun": lambda x: x[5] - x[4] - 0.1},
-        {"type": "ineq", "fun": lambda x: x[6] - x[5] - 0.1},
-        {"type": "ineq", "fun": lambda x: x[3] - 0.01},
-        {"type": "ineq", "fun": lambda x: 1.99 - x[6]},
-    ]
-    bounds = [
-        (0.1, 0.9),
-        (0.1, 0.9),
-        (None, None),
-        (None, None),
-        (None, None),
-        (None, None),
-    ]
-    opt = minimize(err, x0, tol=1e-16, bounds=bounds)
-    assert opt.success, opt.message
-    x = opt.x
+    result = minimize(objective, x0)
+    if not result.success:
+        raise RuntimeError(f"Optimization failed: {result.message}")
 
-    final_params = params(x)
-    spline = create_non_dim_camber(final_params)
-    result = CamberResult(spline, final_params)
+    final_params = create_params(result.x)
+    spline_result = create_non_dim_camber_spline(final_params.non_dim)
+    camber_result = FitCamberResult(
+        spline_result.spline, final_params, spline_result.t_star, spline_result.coefs
+    )
 
     if plot_intermediate:
-        result.plot_camber_comparison(camber)
+        camber_result.plot_camber_comparison(camber)
         plt.title("Camber Fitting Results")
         plt.show()
 
-    return result
+    return camber_result
