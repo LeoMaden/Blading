@@ -19,9 +19,9 @@ class Camber:
 
         # Ensure the curve has constant speed (arc length) parameterisation and
         # is normalised.
-        if not line.is_unit:
+        if not line.is_unit():
             line = line.reparameterise_unit()
-        if not line.is_normalised:
+        if not line.is_normalised():
             line = line.normalise()
 
         self.line = line
