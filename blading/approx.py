@@ -204,16 +204,19 @@ class ExtendCamberResult:
         return ax
 
 
-def extend_camber_line(camber: Camber, section: SectionPerimiter) -> ExtendCamberResult:
+def extend_camber_line(
+    camber: Camber, section: SectionPerimiter, ext_factor: float
+) -> ExtendCamberResult:
     chord = camber.line.length()
     tangent = camber.line.tangent()
 
     # Create lines extending from the first and last points of the camber line
     LE_line = np.c_[
-        camber.line.start() - tangent.coords[0] * 0.1 * chord, camber.line.start()
+        camber.line.start() - tangent.coords[0] * ext_factor * chord,
+        camber.line.start(),
     ].T
     TE_line = np.c_[
-        camber.line.end() + tangent.coords[-1] * 0.1 * chord, camber.line.end()
+        camber.line.end() + tangent.coords[-1] * ext_factor * chord, camber.line.end()
     ].T
 
     # Intersect lines with the section curve to find new leading and trailing edge points
@@ -315,28 +318,28 @@ def _run_iteration_loop(
     """Run the iterative camber improvement loop."""
     convergence_history = []
     iterations = 0
-    
+
     while iterations < config.max_iterations:
         try:
             iteration_result = improve_camber_robust(camber, thickness, section, config)
-            
+
             if not iteration_result.success:
                 return IterationLoopResult(
                     success=False,
                     camber=camber,
                     thickness=thickness,
-                    final_delta=float('inf'),
+                    final_delta=float("inf"),
                     iterations=iterations,
                     convergence_history=convergence_history,
-                    error_message=f"Iteration {iterations} failed: {iteration_result.error_message}"
+                    error_message=f"Iteration {iterations} failed: {iteration_result.error_message}",
                 )
-                
+
             camber = iteration_result.camber
             thickness = iteration_result.thickness
             final_delta = iteration_result.delta
             convergence_history.append(final_delta)
             iterations += 1
-            
+
             # Check convergence
             if final_delta <= config.tolerance:
                 return IterationLoopResult(
@@ -345,9 +348,9 @@ def _run_iteration_loop(
                     thickness=thickness,
                     final_delta=final_delta,
                     iterations=iterations,
-                    convergence_history=convergence_history
+                    convergence_history=convergence_history,
                 )
-                
+
             # Handle callback
             if callback is not None:
                 progress = CamberProgress(iterations, final_delta, camber, False, None)
@@ -359,29 +362,31 @@ def _run_iteration_loop(
                         final_delta=final_delta,
                         iterations=iterations,
                         convergence_history=convergence_history,
-                        error_message="Cancelled by user callback"
+                        error_message="Cancelled by user callback",
                     )
-                    
+
         except Exception as e:
             return IterationLoopResult(
                 success=False,
                 camber=camber,
                 thickness=thickness,
-                final_delta=convergence_history[-1] if convergence_history else float('inf'),
+                final_delta=(
+                    convergence_history[-1] if convergence_history else float("inf")
+                ),
                 iterations=iterations,
                 convergence_history=convergence_history,
-                error_message=f"Unexpected error at iteration {iterations}: {str(e)}"
+                error_message=f"Unexpected error at iteration {iterations}: {str(e)}",
             )
-    
+
     # Max iterations reached
     return IterationLoopResult(
         success=False,
         camber=camber,
         thickness=thickness,
-        final_delta=convergence_history[-1] if convergence_history else float('inf'),
+        final_delta=convergence_history[-1] if convergence_history else float("inf"),
         iterations=iterations,
         convergence_history=convergence_history,
-        error_message=f"Failed to converge after {config.max_iterations} iterations"
+        error_message=f"Failed to converge after {config.max_iterations} iterations",
     )
 
 
@@ -393,19 +398,22 @@ def _create_final_section_safe(
 ) -> tuple[Section | None, str]:
     """Create final section with safe error handling."""
     try:
-        extend_result = extend_camber_line(camber, section)
+        extend_result = extend_camber_line(camber, section, config.extension_factor)
         if not extend_result.success or not extend_result.extended_camber:
             return None, f"Failed to extend camber line: {extend_result.error_message}"
-            
+
         final_section_result = create_final_section(
             extend_result.extended_camber, thickness, section, config
         )
-        
+
         if not final_section_result.success:
-            return None, f"Failed to create final section: {final_section_result.error_message}"
-            
+            return (
+                None,
+                f"Failed to create final section: {final_section_result.error_message}",
+            )
+
         return final_section_result.section, final_section_result.error_message
-        
+
     except Exception as e:
         return None, f"Unexpected error in final section creation: {str(e)}"
 
@@ -436,14 +444,16 @@ def approximate_camber(
     # Initialize camber and thickness
     camber = initial_camber_guess(split_result.upper_curve, split_result.lower_curve)  # type: ignore
     thickness = initial_thickness_guess(split_result.upper_curve, split_result.lower_curve)  # type: ignore
-    
+
     # Run iterative improvement
-    loop_result = _run_iteration_loop(camber, thickness, section, approx_camber_config, callback)
-    
+    loop_result = _run_iteration_loop(
+        camber, thickness, section, approx_camber_config, callback
+    )
+
     # Create final section if successful
     new_section = None
     error_message = loop_result.error_message
-    
+
     if loop_result.success:
         new_section, section_error = _create_final_section_safe(
             loop_result.camber, loop_result.thickness, section, approx_camber_config
@@ -458,7 +468,7 @@ def approximate_camber(
     if callback is not None:
         final_progress = CamberProgress(
             iteration=loop_result.iterations,
-            delta=loop_result.final_delta, 
+            delta=loop_result.final_delta,
             camber=loop_result.camber,
             converged=loop_result.success,
             error=error_message if not loop_result.success else None,
@@ -613,9 +623,9 @@ def create_final_section(
             return FinalSectionResult(
                 section=None,
                 success=False,
-                error_message="Camber line has insufficient points for refinement"
+                error_message="Camber line has insufficient points for refinement",
             )
-            
+
         spacing_le = np.cos(np.linspace(0, np.pi / 2, config.num_points_le))
         t_new_le = t[1] - (t[1] - t[0]) * spacing_le
 
@@ -623,15 +633,15 @@ def create_final_section(
         t_new_te = t[-2] + (t[-1] - t[-2]) * spacing_te
 
         t_new = np.r_[t_new_le, t[2:-2], t_new_te]
-        
+
         # Validate parameter range
         if np.any(t_new < 0) or np.any(t_new > 1):
             return FinalSectionResult(
                 section=None,
                 success=False,
-                error_message="Refined parameter values outside valid range [0,1]"
+                error_message="Refined parameter values outside valid range [0,1]",
             )
-            
+
         refined_camber = camber_line.interpolate(t_new, k=2)
 
         # Extend thickness array to match new parameterization
@@ -639,9 +649,9 @@ def create_final_section(
             return FinalSectionResult(
                 section=None,
                 success=False,
-                error_message="Empty thickness array provided"
+                error_message="Empty thickness array provided",
             )
-            
+
         extended_thickness = np.r_[
             np.repeat(thickness[0], config.num_points_le),
             thickness[1:-1] if len(thickness) > 2 else [thickness[0]],
@@ -653,36 +663,40 @@ def create_final_section(
             return FinalSectionResult(
                 section=None,
                 success=False,
-                error_message="Refined camber has insufficient points"
+                error_message="Refined camber has insufficient points",
             )
-            
+
         camber_no_ends = Camber(refined_camber[1:-1])
         iter_result = improve_camber_robust(
             camber_no_ends, extended_thickness[1:-1], section, config
         )
-        
+
         if not iter_result.success:
             # Fallback: use original thickness distribution
             final_thickness = np.r_[0, extended_thickness[1:-1], 0]
             return FinalSectionResult(
-                section=Section(Camber(refined_camber), final_thickness, section.stream_line),
+                section=Section(
+                    Camber(refined_camber), final_thickness, section.stream_line
+                ),
                 success=True,
-                error_message=f"Warning: Used fallback thickness due to: {iter_result.error_message}"
+                error_message=f"Warning: Used fallback thickness due to: {iter_result.error_message}",
             )
-        
+
         # Success case: use recalculated thickness
         final_thickness = np.r_[0, iter_result.thickness, 0]
-        
+
         return FinalSectionResult(
-            section=Section(Camber(refined_camber), final_thickness, section.stream_line),
-            success=True
+            section=Section(
+                Camber(refined_camber), final_thickness, section.stream_line
+            ),
+            success=True,
         )
-        
+
     except Exception as e:
         return FinalSectionResult(
             section=None,
             success=False,
-            error_message=f"Unexpected error in create_final_section: {str(e)}"
+            error_message=f"Unexpected error in create_final_section: {str(e)}",
         )
 
 
