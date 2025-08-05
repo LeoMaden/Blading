@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from numpy.typing import NDArray
-from .section import Section
+
+# from .section import Section
 from scipy.interpolate import make_interp_spline, BSpline
 import numpy as np
 from . import shape_space
@@ -11,6 +12,8 @@ from typing import Callable
 from scipy.optimize import minimize, fmin
 from geometry.curves import plot_plane_curve
 
+Section = NDArray  # Placeholder for Section type
+
 
 @dataclass
 class Thickness:
@@ -20,8 +23,6 @@ class Thickness:
     def __post_init__(self):
         if len(self.s) != len(self.t):
             raise ValueError("s and t arrays must have the same length")
-        if not np.allclose(self.s[0], 0.0) or not np.allclose(self.s[-1], 1.0):
-            raise ValueError("Arc length s must be normalised (0 to 1)")
 
     @property
     def max_thickness(self) -> float:
