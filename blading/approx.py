@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from .camber import Camber
 from .section import Section
 from .section_perimiter import SectionPerimiter
+from scipy.signal import find_peaks
 
 
 ################# LE and TE detection #################
@@ -16,6 +17,7 @@ from .section_perimiter import SectionPerimiter
 @dataclass
 class SplitConfig:
     curvature_threshold_factor: float = 5
+    curvature_prominence_factor: float = 0.1
     min_segment_length: int = 10
 
 
@@ -73,17 +75,25 @@ class SplitSectionResult:
         self.plot_section(ax2)
 
 
-def threshold_masking(curvature, threshold_factor: float = 3):
+def threshold_masking(
+    curvature, threshold_factor: float = 3, prominence_factor: float = 0.1
+):
     """
     Mask high curvature regions based on a threshold
 
     Parameters:
     curvature: array of curvature values
-    threshold_factor: multiplier for median-based threshold
+    threshold_factor: multiplier of smallest peak
+    prominence_factor: minimum prominence of peaks to consider relative to max curvature
     """
-    # Use median-based threshold to handle log-scale data
-    median_curvature = np.median(curvature)
-    threshold = median_curvature * threshold_factor
+    # Find the smallest peak in curvature with a given prominence
+
+    peaks, properties = find_peaks(curvature, prominence=0.01 * np.max(curvature))
+    if len(peaks) > 0:
+        threshold = np.min(curvature[peaks]) * threshold_factor
+    else:
+        # If no peaks use maximum curvature
+        threshold = np.max(curvature) * threshold_factor
 
     # Create mask: True for low curvature, False for high curvature
     low_curvature_mask = curvature < threshold
@@ -130,6 +140,7 @@ def split_section(
     low_curvature_mask, threshold = threshold_masking(
         curvature,
         config.curvature_threshold_factor,
+        config.curvature_prominence_factor,
     )
 
     # Find continuous segments of low curvature
