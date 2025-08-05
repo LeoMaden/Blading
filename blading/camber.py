@@ -78,6 +78,11 @@ class Camber:
         """Turning angle of the camber line."""
         return self.line.turning_angle()
 
+    @property
+    def chord(self) -> float:
+        """Chord length of the camber line."""
+        return self.line.length()
+
     def plot_non_dim(self, ax=None, *plot_args, **plot_kwargs):
         if ax is None:
             _, ax = plt.subplots()
