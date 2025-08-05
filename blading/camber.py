@@ -12,6 +12,43 @@ from .section import Section
 
 
 @dataclass
+class Camber:
+    line: PlaneCurve
+
+    def __post_init__(self):
+        line = self.line
+
+        # Ensure the curve has constant speed (arc length) parameterisation and
+        # is normalised.
+        if not line.is_unit:
+            line = line.reparameterise_unit()
+        if not line.is_normalised:
+            line = line.normalise()
+
+        self.line = line
+
+    @property
+    def s(self) -> NDArray:
+        return self.line.param  # This is correct since the curve is normalised.
+
+
+@dataclass
+class CamberStackingParams:
+    chord: float  # Chord length of the section
+    x_offset: float  # Offset in the meridional or x direction
+    y_offset: float  # Offset in the circumferential or y direction
+
+
+@dataclass
+class CamberMetalAngles:
+    LE: float  # Leading edge angle
+    TE: float  # Trailing edge angle
+
+
+##################################################
+
+
+@dataclass
 class CamberParams:
     angle_LE: float
     angle_TE: float
@@ -26,7 +63,7 @@ class CamberParams:
 
 
 @dataclass
-class Camber:
+class _Camber:
     s: NDArray
     non_dim: NDArray
     angle: NDArray
