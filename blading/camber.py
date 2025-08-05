@@ -8,7 +8,6 @@ from scipy.interpolate import (
     BSpline,
 )
 from scipy.optimize import minimize
-from .section import Section
 
 
 @dataclass
@@ -178,7 +177,8 @@ def create_camber(non_dim: NDArray, s: NDArray, p: CamberParams):
     return camber_line
 
 
-def fit_camber(sec: Section, plot_intermediate=False) -> CamberResult:
+# TEMP: remove section type to prevent circular import for now
+def fit_camber(sec, plot_intermediate=False) -> CamberResult:
     camber = Camber.from_camber_line(sec.camber_line)
     s = camber.s
     non_dim = camber.non_dim

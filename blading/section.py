@@ -8,6 +8,7 @@ from numpy.polynomial import Polynomial
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from scipy.interpolate import make_interp_spline
+from .camber import Camber
 
 
 class ReferencePoint(Enum):
@@ -28,7 +29,7 @@ class ReferencePoint(Enum):
 
 @dataclass
 class Section:
-    camber_line: PlaneCurve
+    camber: Camber
     thickness: NDArray
     stream_line: Optional[PlaneCurve]
     stream_distance: float = 0.0  # Distance along stream_line
@@ -39,18 +40,18 @@ class Section:
         self._ensure_unit_speed_camber_line()
         self._validate_inputs()
         # Translate camber line so reference point is at origin
-        self._translate_camber_line_to_origin()
+        # self._translate_camber_line_to_origin()
 
     def _ensure_unit_speed_camber_line(self) -> None:
         """Ensure the camber line is unit speed parameterized and normalized."""
         # Check if it's unit speed and normalized using the built-in methods
-        is_unit_speed = self.camber_line.is_unit()
-        is_normalized = self.camber_line.is_normalised()
+        is_unit_speed = self.camber.line.is_unit()
+        is_normalized = self.camber.line.is_normalised()
 
         # If not unit speed or not normalized, reparameterize
         if not (is_normalized and is_unit_speed):
             # Reparameterize to unit speed and normalize
-            unit_speed_curve = self.camber_line.reparameterise_unit().normalise()
+            unit_speed_curve = self.camber.line.reparameterise_unit().normalise()
             object.__setattr__(self, "camber_line", unit_speed_curve)
 
     def _validate_inputs(self) -> None:
@@ -216,7 +217,7 @@ class Section:
         thickness[mask_round_TE] = poly(s[mask_round_TE])
 
         return Section(
-            self.camber_line,
+            self.camber,
             thickness,
             self.stream_line,
             self.stream_distance,
@@ -251,7 +252,7 @@ class Section:
         t_over_c[mask_round_TE] = np.interp(s[mask_round_TE], x_te, y_te)
 
         return Section(
-            self.camber_line,
+            self.camber,
             t_over_c * self.chord,
             self.stream_line,
             self.stream_distance,
@@ -714,7 +715,7 @@ class Section:
             New Section with interpolated camber line and thickness
         """
         # Interpolate camber line to new parameter
-        new_camber_line = self.camber_line.interpolate(new_param)
+        new_camber = Camber(self.camber.line.interpolate(new_param))
 
         # Interpolate thickness values using cubic spline for better accuracy
         current_param = self.normalised_arc_length
@@ -729,7 +730,7 @@ class Section:
         # Keep the original stream_line as it has independent parameterization
         # The Section constructor will validate the new_param through _validate_inputs
         return Section(
-            camber_line=new_camber_line,
+            camber=new_camber,
             thickness=new_thickness,
             stream_line=self.stream_line,  # Keep original stream_line unchanged
             stream_distance=self.stream_distance,

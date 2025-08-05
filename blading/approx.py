@@ -15,7 +15,7 @@ from .section_perimiter import SectionPerimiter
 
 @dataclass
 class SplitConfig:
-    curvature_threshold_factor: float = 3
+    curvature_threshold_factor: float = 5
     min_segment_length: int = 10
 
 
@@ -170,12 +170,91 @@ def split_section(
     )
 
 
+################# Extend camber line to LE and TE #################
+
+
+@dataclass
+class ExtendCamberResult:
+    extended_camber: Camber | None
+    success: bool
+    original_camber: Camber
+    section: SectionPerimiter
+    LE_line: NDArray
+    TE_line: NDArray
+    error_message: str = ""
+
+    def plot(self, ax=None):
+        if ax is None:
+            fig, ax = plt.subplots()
+
+        self.original_camber.line.plot(ax=ax, label="Original Camber", color="b")
+        self.section.curve.plot(ax=ax, label="Section Curve", color="k")
+        ax.plot(self.LE_line[:, 0], self.LE_line[:, 1], "r--", label="LE Line")
+        ax.plot(self.TE_line[:, 0], self.TE_line[:, 1], "g--", label="TE Line")
+
+        if self.extended_camber:
+            self.extended_camber.line.plot(
+                ax=ax, label="Extended Camber", color="m", linestyle="--"
+            )
+            plt.plot(*self.extended_camber.line.start(), "mo")
+            plt.plot(*self.extended_camber.line.end(), "mo")
+
+        ax.legend()
+        ax.axis("equal")
+        return ax
+
+
+def extend_camber_line(camber: Camber, section: SectionPerimiter) -> ExtendCamberResult:
+    chord = camber.line.length()
+    tangent = camber.line.tangent()
+
+    # Create lines extending from the first and last points of the camber line
+    LE_line = np.c_[
+        camber.line.start() - tangent.coords[0] * 0.1 * chord, camber.line.start()
+    ].T
+    TE_line = np.c_[
+        camber.line.end() + tangent.coords[-1] * 0.1 * chord, camber.line.end()
+    ].T
+
+    # Intersect lines with the section curve to find new leading and trailing edge points
+    LE_point = section.curve.intersect_coords(LE_line)
+    TE_point = section.curve.intersect_coords(TE_line)
+
+    # Ensure there is only one intersection point for each end
+    if LE_point.shape[0] != 1 or TE_point.shape[0] != 1:
+        extended_camber = None
+        success = False
+        error_message = "Failed to find unique intersection points for LE or TE lines."
+    else:
+        new_coords = np.r_[LE_point, camber.line.coords, TE_point]
+        new_line = PlaneCurve.new_unit_speed(new_coords)
+        extended_camber = Camber(new_line)
+        success = True
+        error_message = ""
+
+    return ExtendCamberResult(
+        extended_camber,
+        success,
+        camber,
+        section,
+        LE_line,
+        TE_line,
+        error_message,
+    )
+
+
 ################# Camber Approximation #################
 
 
 @dataclass
 class ApproximateCamberConfig:
-    pass
+    tolerance: float = 1e-7
+    max_iterations: int = 100
+    relax_factor: float = 0.2
+    thickness_scale: float = 1.2
+    extension_factor: float = 0.1  # Factor of chord length for LE/TE extension
+    num_points_le: int = 50
+    num_points_te: int = 50
 
 
 @dataclass
@@ -190,6 +269,7 @@ class CamberProgress:
 @dataclass
 class ApproximateCamberResult:
     section: Section | None
+    split_result: SplitSectionResult
     success: bool
     iterations: int
     final_delta: float
@@ -205,7 +285,7 @@ class ApproximateCamberResult:
 class ApproximateCamberCallback(Protocol):
     def __call__(self, progress: CamberProgress) -> bool:
         """Return False to abort iteration."""
-        pass
+        ...
 
 
 class CamberApproximationError(Exception):
@@ -214,251 +294,414 @@ class CamberApproximationError(Exception):
     pass
 
 
+@dataclass
+class IterationLoopResult:
+    success: bool
+    camber: Camber
+    thickness: NDArray
+    final_delta: float
+    iterations: int
+    convergence_history: list[float]
+    error_message: str = ""
+
+
+def _run_iteration_loop(
+    camber: Camber,
+    thickness: NDArray,
+    section: SectionPerimiter,
+    config: ApproximateCamberConfig,
+    callback: ApproximateCamberCallback | None,
+) -> IterationLoopResult:
+    """Run the iterative camber improvement loop."""
+    convergence_history = []
+    iterations = 0
+    
+    while iterations < config.max_iterations:
+        try:
+            iteration_result = improve_camber_robust(camber, thickness, section, config)
+            
+            if not iteration_result.success:
+                return IterationLoopResult(
+                    success=False,
+                    camber=camber,
+                    thickness=thickness,
+                    final_delta=float('inf'),
+                    iterations=iterations,
+                    convergence_history=convergence_history,
+                    error_message=f"Iteration {iterations} failed: {iteration_result.error_message}"
+                )
+                
+            camber = iteration_result.camber
+            thickness = iteration_result.thickness
+            final_delta = iteration_result.delta
+            convergence_history.append(final_delta)
+            iterations += 1
+            
+            # Check convergence
+            if final_delta <= config.tolerance:
+                return IterationLoopResult(
+                    success=True,
+                    camber=camber,
+                    thickness=thickness,
+                    final_delta=final_delta,
+                    iterations=iterations,
+                    convergence_history=convergence_history
+                )
+                
+            # Handle callback
+            if callback is not None:
+                progress = CamberProgress(iterations, final_delta, camber, False, None)
+                if not callback(progress):
+                    return IterationLoopResult(
+                        success=False,
+                        camber=camber,
+                        thickness=thickness,
+                        final_delta=final_delta,
+                        iterations=iterations,
+                        convergence_history=convergence_history,
+                        error_message="Cancelled by user callback"
+                    )
+                    
+        except Exception as e:
+            return IterationLoopResult(
+                success=False,
+                camber=camber,
+                thickness=thickness,
+                final_delta=convergence_history[-1] if convergence_history else float('inf'),
+                iterations=iterations,
+                convergence_history=convergence_history,
+                error_message=f"Unexpected error at iteration {iterations}: {str(e)}"
+            )
+    
+    # Max iterations reached
+    return IterationLoopResult(
+        success=False,
+        camber=camber,
+        thickness=thickness,
+        final_delta=convergence_history[-1] if convergence_history else float('inf'),
+        iterations=iterations,
+        convergence_history=convergence_history,
+        error_message=f"Failed to converge after {config.max_iterations} iterations"
+    )
+
+
+def _create_final_section_safe(
+    camber: Camber,
+    thickness: NDArray,
+    section: SectionPerimiter,
+    config: ApproximateCamberConfig,
+) -> tuple[Section | None, str]:
+    """Create final section with safe error handling."""
+    try:
+        extend_result = extend_camber_line(camber, section)
+        if not extend_result.success or not extend_result.extended_camber:
+            return None, f"Failed to extend camber line: {extend_result.error_message}"
+            
+        final_section_result = create_final_section(
+            extend_result.extended_camber, thickness, section, config
+        )
+        
+        if not final_section_result.success:
+            return None, f"Failed to create final section: {final_section_result.error_message}"
+            
+        return final_section_result.section, final_section_result.error_message
+        
+    except Exception as e:
+        return None, f"Unexpected error in final section creation: {str(e)}"
+
+
 def approximate_camber(
     section: SectionPerimiter,
     split_config: SplitConfig | None = None,
     approx_camber_config: ApproximateCamberConfig | None = None,
     callback: ApproximateCamberCallback | None = None,
 ) -> ApproximateCamberResult:
-    pass
+    # Set defaults
+    split_config = split_config or SplitConfig()
+    approx_camber_config = approx_camber_config or ApproximateCamberConfig()
+
+    # Split the section into upper and lower curves
+    split_result = split_section(section, split_config)
+    if not split_result.success:
+        return ApproximateCamberResult(
+            section=None,
+            split_result=split_result,
+            success=False,
+            iterations=0,
+            final_delta=0.0,
+            convergence_history=[],
+            error_message=split_result.error_message,
+        )
+
+    # Initialize camber and thickness
+    camber = initial_camber_guess(split_result.upper_curve, split_result.lower_curve)  # type: ignore
+    thickness = initial_thickness_guess(split_result.upper_curve, split_result.lower_curve)  # type: ignore
+    
+    # Run iterative improvement
+    loop_result = _run_iteration_loop(camber, thickness, section, approx_camber_config, callback)
+    
+    # Create final section if successful
+    new_section = None
+    error_message = loop_result.error_message
+    
+    if loop_result.success:
+        new_section, section_error = _create_final_section_safe(
+            loop_result.camber, loop_result.thickness, section, approx_camber_config
+        )
+        if new_section is None:
+            loop_result.success = False
+            error_message = section_error
+        elif section_error:
+            error_message = section_error  # Warning message
+
+    # Final callback notification
+    if callback is not None:
+        final_progress = CamberProgress(
+            iteration=loop_result.iterations,
+            delta=loop_result.final_delta, 
+            camber=loop_result.camber,
+            converged=loop_result.success,
+            error=error_message if not loop_result.success else None,
+        )
+        callback(final_progress)
+
+    return ApproximateCamberResult(
+        section=new_section,
+        split_result=split_result,
+        success=loop_result.success,
+        iterations=loop_result.iterations,
+        final_delta=loop_result.final_delta,
+        convergence_history=loop_result.convergence_history,
+        error_message=error_message,
+    )
 
 
-###############################################
-
-
-Mask = NDArray[np.bool]
-
-
-@dataclass(frozen=True)
-class CamberIteration:
-    lines: NDArray
-    upper_intersections: NDArray
-    lower_intersections: NDArray
-    camber: PlaneCurve
+@dataclass
+class CamberIterationResult:
+    camber: Camber
     thickness: NDArray
     delta: float
-
-
-@dataclass(frozen=True)
-class ApproxCamberResult:
     success: bool
-    mask_LE: Mask
-    mask_TE: Mask
-    upper_split: PlaneCurve
-    lower_split: PlaneCurve
-    camber_iterations: list[CamberIteration]
-    n_iter: int
-    section: Section | None
-    err_msg: str = ""
-
-    def plot(self, orig_sec: SectionPerimiter):
-        fig, ax = plt.subplots()
-        plot_plane_curve(self.upper_split, ax)
-        plot_plane_curve(self.lower_split, ax)
-        plot_plane_curve(orig_sec.curve, ax, "k:")
-        plot_plane_curve(orig_sec.curve[self.mask_LE], ax, "r.")
-        plot_plane_curve(orig_sec.curve[self.mask_TE], ax, "b.")
-        plot_plane_curve(self.camber_iterations[-1].camber, ax, "m.-")
-        plt.axis("equal")
-        plt.show()
+    error_message: str = ""
 
 
-def find_LE_TE(
-    section: SectionPerimiter,
-    thresh_LE: float = 0.5,
-    thresh_TE: float = 1.0,
-    mask_front: Mask | None = None,
-) -> tuple[Mask, Mask]:
-    """Split a blade section according to curvature.
+def initial_thickness_guess(
+    upper_curve: PlaneCurve, lower_curve: PlaneCurve
+) -> NDArray:
+    """Calculate initial thickness as distance between upper and lower curves."""
+    upper_curve = upper_curve.reparameterise_unit().normalise()
+    lower_curve = lower_curve.reparameterise_unit().normalise()
 
-    Parameters
-    ----------
-    section : FlatSection
-        The section to split.
-    thresh_LE : float, optional
-        The numbers of orders of magnitude below the maximum leading edge
-        curvature that will be included in the leading edge, by default 0.5
-    thresh_TE : float, optional
-        The same as `thresh_LE` for the trailing edge, by default 1.0
-    mask_front : NDArray[np.bool] | None, optional
-        Boolean array marking where the front of the blade is, by default None.
-        If this parameter is None, the first and last 25% of the curve defining
-        `section` is assumed to be the "front" of the blade.
+    if len(upper_curve.param) > len(lower_curve.param):
+        lower_curve = lower_curve.interpolate(upper_curve.param, k=2)
+    else:
+        upper_curve = upper_curve.interpolate(lower_curve.param, k=2)
 
-    Returns
-    -------
-    tuple[Mask, Mask] = (mask_LE, mask_TE)
-        Boolean arrays marking the location of the leading and trailing edges.
-    """
-    curve = section.curve.reparameterise_unit().normalise()
-    k = curve.curvature()
-
-    if mask_front is None:
-        x_mid = (min(curve.x) + max(curve.x)) / 2
-        mask_front = curve.x < x_mid
-
-    mask_rear = ~mask_front  # type: ignore
-
-    max_k_LE = np.max(k[mask_front])
-    max_k_TE = np.max(k[mask_rear])
-
-    mask_LE_k = k > max_k_LE / 10**thresh_LE  # Orders of magnitude below peak
-    mask_TE_k = k > max_k_TE / 10**thresh_TE
-
-    mask_LE = mask_front & mask_LE_k
-    mask_TE = mask_rear & mask_TE_k
-
-    return mask_LE, mask_TE
+    thickness = np.linalg.norm(upper_curve.coords - lower_curve.coords, axis=1)
+    return thickness
 
 
-def improve_camber(
-    camber: PlaneCurve,
+def improve_camber_robust(
+    camber: Camber,
     thickness: NDArray,
     section: SectionPerimiter,
-    relax_factor: float = 0.2,
-) -> CamberIteration:
-    N = len(thickness)
-    upper_coords = np.zeros((N, 2))
-    lower_coords = np.zeros((N, 2))
+    config: ApproximateCamberConfig,
+) -> CamberIterationResult:
+    """Robust version of camber improvement with proper error handling."""
+    try:
+        N = len(thickness)
+        upper_coords = np.zeros((N, 2))
+        lower_coords = np.zeros((N, 2))
 
-    lines = np.zeros((N, 3, 2))
+        normal = camber.line.signed_normal()
 
-    normal = camber.signed_normal()
-    _THICKNESS_SCALE = 1.2
+        successful_intersections = 0
+        for i in range(N):
+            c = camber.line.coords[i]
+            u = c + config.thickness_scale * thickness[i] * normal.coords[i]
+            l = c - config.thickness_scale * thickness[i] * normal.coords[i]
 
-    for i in range(N):
-        c = camber.coords[i]
-        u = c + _THICKNESS_SCALE * thickness[i] * normal.coords[i]
-        l = c - _THICKNESS_SCALE * thickness[i] * normal.coords[i]
-        int_u = section.curve.intersect_coords(np.c_[c, u].T)
-        int_l = section.curve.intersect_coords(np.c_[l, c].T)
-        assert int_u.shape[0] == 1, "Too many intersections"
-        assert int_l.shape[0] == 1, "Too many intersections"
-        upper_coords[i] = int_u[0]
-        lower_coords[i] = int_l[0]
-        lines[i] = np.c_[l, c, u].T
+            # Try to find intersections with error handling
+            int_u = section.curve.intersect_coords(np.c_[c, u].T)
+            int_l = section.curve.intersect_coords(np.c_[l, c].T)
 
-    camber_new = PlaneCurve((upper_coords + lower_coords) / 2, camber.param)
-    thickness_new = np.linalg.norm(upper_coords - lower_coords, axis=1)
+            # Handle multiple or no intersections gracefully
+            if int_u.shape[0] == 1 and int_l.shape[0] == 1:
+                upper_coords[i] = int_u[0]
+                lower_coords[i] = int_l[0]
+                successful_intersections += 1
+            elif int_u.shape[0] > 1 or int_l.shape[0] > 1:
+                # Take closest intersection
+                if int_u.shape[0] > 1:
+                    distances = np.linalg.norm(int_u - u, axis=1)
+                    upper_coords[i] = int_u[np.argmin(distances)]
+                else:
+                    upper_coords[i] = int_u[0]
 
-    # Relaxation
-    delta = (camber_new - camber) * relax_factor
-    camber_new = camber + delta
+                if int_l.shape[0] > 1:
+                    distances = np.linalg.norm(int_l - l, axis=1)
+                    lower_coords[i] = int_l[np.argmin(distances)]
+                else:
+                    lower_coords[i] = int_l[0]
+                successful_intersections += 1
+            else:
+                # No intersection found - keep previous position
+                upper_coords[i] = (
+                    camber.line.coords[i] + thickness[i] * normal.coords[i]
+                )
+                lower_coords[i] = (
+                    camber.line.coords[i] - thickness[i] * normal.coords[i]
+                )
 
-    return CamberIteration(
-        lines=lines,
-        upper_intersections=upper_coords,
-        lower_intersections=lower_coords,
-        camber=camber_new,
-        thickness=thickness_new,
-        delta=np.sum(delta.norm()),
-    )
-
-
-def extend(camber_line: PlaneCurve, section: SectionPerimiter) -> PlaneCurve:
-    # Extend leading and trailing edges
-    chord = camber_line.length()
-    tangent = camber_line.tangent()
-    LE_line = np.c_[
-        camber_line.start() - tangent.coords[0] * 0.1 * chord, camber_line.start()
-    ].T
-    LE_point = section.curve.intersect_coords(LE_line)
-    TE_line = np.c_[
-        camber_line.end() + tangent.coords[-1] * 0.1 * chord, camber_line.end()
-    ].T
-    TE_point = section.curve.intersect_coords(TE_line)
-    assert LE_point.shape[0] == 1, "Too many intersections"
-    assert TE_point.shape[0] == 1, "Too many intersections"
-    new_coords = np.r_[LE_point, camber_line.coords, TE_point]
-    camber_line = PlaneCurve.new_unit_speed(new_coords).normalise()
-    return camber_line
-
-
-def approx_camber_line(
-    section: SectionPerimiter,
-    tol: float = 1e-7,
-    thresh_LE: float = 0.5,
-    thresh_TE: float = 1.0,
-    mask_front: Mask | None = None,
-    relax_factor: float = 0.2,
-    num_points_LE: int = 25,
-    num_points_TE: int = 25,
-) -> ApproxCamberResult:
-    mask_LE, mask_TE = find_LE_TE(section, thresh_LE, thresh_TE, mask_front)
-    not_LE_TE = ~mask_LE & ~mask_TE
-    diff = np.diff(not_LE_TE.astype(int))
-    starts = np.where(diff == 1)[0] + 1  # start of 1s
-    ends = np.where(diff == -1)[0] + 1  # end of 1s
-
-    upper = section.curve[starts[0] : ends[0]]
-    lower = section.curve[starts[1] : ends[1]][::-1]
-
-    # Constant speed normalised with same parameter
-    upper = upper.reparameterise_unit().normalise()
-    lower = lower.reparameterise_unit().normalise().interpolate(upper.param)
-    camber_guess = (upper + lower) / 2
-    thickness_guess = (upper - lower).norm()
-
-    camber_iters: list[CamberIteration] = []
-    while True:
-        try:
-            iter = improve_camber(
-                camber_guess,
-                thickness_guess,
-                section,
-                relax_factor,
-            )
-        except Exception as e:
-            return ApproxCamberResult(
+        if successful_intersections < N * 0.8:  # Less than 80% success rate
+            return CamberIterationResult(
+                camber=camber,
+                thickness=thickness,
+                delta=float("inf"),
                 success=False,
-                mask_LE=mask_LE,
-                mask_TE=mask_TE,
-                upper_split=upper,
-                lower_split=lower,
-                camber_iterations=camber_iters,
-                n_iter=len(camber_iters),
-                section=None,
-                err_msg=str(e),
+                error_message=f"Only {successful_intersections}/{N} intersections found",
             )
 
-        camber_iters.append(iter)
-        if iter.delta <= tol:
-            break
-        camber_guess = iter.camber
-        thickness_guess = iter.thickness
+        # Create new camber line
+        camber_coords = (upper_coords + lower_coords) / 2
+        new_camber = Camber(PlaneCurve.new_unit_speed(camber_coords))
+        new_thickness = np.linalg.norm(upper_coords - lower_coords, axis=1)
 
-    camber_new = extend(iter.camber, section)
-    thickness_new = iter.thickness
+        # Apply relaxation
+        delta_coords = (
+            new_camber.line.coords - camber.line.coords
+        ) * config.relax_factor
+        relaxed_coords = camber.line.coords + delta_coords
+        final_camber = Camber(PlaneCurve(relaxed_coords, camber.line.param))
 
-    # Add points near leading edge
-    t = camber_new.param
-    spacing_LE = np.cos(np.linspace(0, np.pi / 2, num_points_LE))
-    t_new_LE = t[1] - (t[1] - t[0]) * spacing_LE
+        delta = np.sum(np.linalg.norm(delta_coords, axis=1))
 
-    spacing_TE = np.cos(np.linspace(np.pi / 2, 0, num_points_TE))
-    t_new_TE = t[-2] + (t[-1] - t[-2]) * spacing_TE
+        return CamberIterationResult(
+            camber=final_camber, thickness=new_thickness, delta=delta, success=True
+        )
 
-    t_new = np.r_[t_new_LE, t[2:-2], t_new_TE]
-    camber_new = camber_new.interpolate(t_new, k=2)
+    except Exception as e:
+        return CamberIterationResult(
+            camber=camber,
+            thickness=thickness,
+            delta=float("inf"),
+            success=False,
+            error_message=str(e),
+        )
 
-    # Ensure thickness matches camber
-    thickness_new = np.r_[
-        np.repeat(thickness_new[0], num_points_LE),
-        thickness_new[1:-1],
-        np.repeat(thickness_new[-1], num_points_TE),
-    ]
-    iter = improve_camber(camber_new[1:-1], thickness_new[1:-1], section)
-    thickness_new = np.r_[0, iter.thickness, 0]
 
-    section_new = Section(camber_new, thickness_new, section.stream_line)
+@dataclass
+class FinalSectionResult:
+    section: Section | None
+    success: bool
+    error_message: str = ""
 
-    return ApproxCamberResult(
-        success=True,
-        mask_LE=mask_LE,
-        mask_TE=mask_TE,
-        upper_split=upper,
-        lower_split=lower,
-        camber_iterations=camber_iters,
-        n_iter=len(camber_iters),
-        section=section_new,
-    )
+
+def create_final_section(
+    extended_camber: Camber,
+    thickness: NDArray,
+    section: SectionPerimiter,
+    config: ApproximateCamberConfig,
+) -> FinalSectionResult:
+    """Create final section with extended camber and refined point distribution."""
+    try:
+        camber_line = extended_camber.line
+
+        # Add refined point distribution near LE and TE
+        t = camber_line.param
+        if len(t) < 3:
+            return FinalSectionResult(
+                section=None,
+                success=False,
+                error_message="Camber line has insufficient points for refinement"
+            )
+            
+        spacing_le = np.cos(np.linspace(0, np.pi / 2, config.num_points_le))
+        t_new_le = t[1] - (t[1] - t[0]) * spacing_le
+
+        spacing_te = np.cos(np.linspace(np.pi / 2, 0, config.num_points_te))
+        t_new_te = t[-2] + (t[-1] - t[-2]) * spacing_te
+
+        t_new = np.r_[t_new_le, t[2:-2], t_new_te]
+        
+        # Validate parameter range
+        if np.any(t_new < 0) or np.any(t_new > 1):
+            return FinalSectionResult(
+                section=None,
+                success=False,
+                error_message="Refined parameter values outside valid range [0,1]"
+            )
+            
+        refined_camber = camber_line.interpolate(t_new, k=2)
+
+        # Extend thickness array to match new parameterization
+        if len(thickness) == 0:
+            return FinalSectionResult(
+                section=None,
+                success=False,
+                error_message="Empty thickness array provided"
+            )
+            
+        extended_thickness = np.r_[
+            np.repeat(thickness[0], config.num_points_le),
+            thickness[1:-1] if len(thickness) > 2 else [thickness[0]],
+            np.repeat(thickness[-1], config.num_points_te),
+        ]
+
+        # Re-calculate thicknesses with robust error handling
+        if len(refined_camber.coords) < 3:
+            return FinalSectionResult(
+                section=None,
+                success=False,
+                error_message="Refined camber has insufficient points"
+            )
+            
+        camber_no_ends = Camber(refined_camber[1:-1])
+        iter_result = improve_camber_robust(
+            camber_no_ends, extended_thickness[1:-1], section, config
+        )
+        
+        if not iter_result.success:
+            # Fallback: use original thickness distribution
+            final_thickness = np.r_[0, extended_thickness[1:-1], 0]
+            return FinalSectionResult(
+                section=Section(Camber(refined_camber), final_thickness, section.stream_line),
+                success=True,
+                error_message=f"Warning: Used fallback thickness due to: {iter_result.error_message}"
+            )
+        
+        # Success case: use recalculated thickness
+        final_thickness = np.r_[0, iter_result.thickness, 0]
+        
+        return FinalSectionResult(
+            section=Section(Camber(refined_camber), final_thickness, section.stream_line),
+            success=True
+        )
+        
+    except Exception as e:
+        return FinalSectionResult(
+            section=None,
+            success=False,
+            error_message=f"Unexpected error in create_final_section: {str(e)}"
+        )
+
+
+def initial_camber_guess(upper_curve: PlaneCurve, lower_curve: PlaneCurve) -> Camber:
+    """
+    Create an initial guess for the camber line as the average of upper and lower curves.
+    """
+
+    # Ensure both curves have normalised arc length parameterisation
+    upper_curve = upper_curve.reparameterise_unit().normalise()
+    lower_curve = lower_curve.reparameterise_unit().normalise()
+
+    # Interpolate the upper and lower curves to have equal number of points
+    # using the spacing from the curve with more points
+    if len(upper_curve.param) > len(lower_curve.param):
+        lower_curve = lower_curve.interpolate(upper_curve.param, k=2)
+    else:
+        upper_curve = upper_curve.interpolate(lower_curve.param, k=2)
+
+    # Average the coordinates of upper and lower curves
+    camber_coords = (upper_curve.coords + lower_curve.coords) / 2
+    return Camber(PlaneCurve.new_unit_speed(camber_coords))
