@@ -1,10 +1,229 @@
+from typing import Protocol
 import matplotlib.pyplot as plt
 from geometry.curves import plot_plane_curve
 from numpy.typing import NDArray
 import numpy as np
 from geometry.curves import PlaneCurve
 from dataclasses import dataclass
-from .section import Section, FlatSection
+from .camber import Camber
+from .section import Section
+from .section_perimiter import SectionPerimiter
+
+
+################# LE and TE detection #################
+
+
+@dataclass
+class SplitConfig:
+    curvature_threshold_factor: float = 3
+    min_segment_length: int = 10
+
+
+@dataclass
+class SplitSectionResult:
+    upper_curve: PlaneCurve | None
+    lower_curve: PlaneCurve | None
+    success: bool
+
+    section: SectionPerimiter
+    segments: list[tuple[int, int]]  # List of (start, end) indices for segments
+    curvature_threshold: float
+    s_data: NDArray
+    curvature_data: NDArray  # For diagnostics
+    error_message: str = ""
+
+    def plot_curvature(self, ax=None):
+        if ax is None:
+            fig, ax = plt.subplots()
+
+        ax.set_title("Curvature of Section")
+        ax.semilogy(self.s_data, self.curvature_data, label="Curvature", color="k")
+        ax.axhline(
+            self.curvature_threshold, color="red", linestyle="--", label="Threshold"
+        )
+        ax.set_xlabel("Normalised Arc Length (s)")
+        for segment in self.segments:
+            ax.semilogy(
+                self.s_data[segment[0] : segment[1]],
+                self.curvature_data[segment[0] : segment[1]],
+                label=f"Segment {segment[0]}-{segment[1]}",
+            )
+        ax.legend()
+        return ax
+
+    def plot_section(self, ax=None):
+        if ax is None:
+            fig, ax = plt.subplots()
+
+        self.section.curve.plot(ax=ax, label="Section", color="k", linestyle="--")
+
+        if not self.upper_curve or not self.lower_curve:
+            ax.set_title("No valid upper/lower curves found")
+        else:
+            self.upper_curve.plot(ax=ax, label="Upper Curve", linewidth=2)
+            self.lower_curve.plot(ax=ax, label="Lower Curve", linewidth=2)
+
+        ax.legend()
+        ax.axis("equal")
+        return ax
+
+    def plot_summary(self):
+        fig, (ax1, ax2) = plt.subplots(ncols=2, figsize=(14, 6))
+        self.plot_curvature(ax1)
+        self.plot_section(ax2)
+
+
+def threshold_masking(curvature, threshold_factor: float = 3):
+    """
+    Mask high curvature regions based on a threshold
+
+    Parameters:
+    curvature: array of curvature values
+    threshold_factor: multiplier for median-based threshold
+    """
+    # Use median-based threshold to handle log-scale data
+    median_curvature = np.median(curvature)
+    threshold = median_curvature * threshold_factor
+
+    # Create mask: True for low curvature, False for high curvature
+    low_curvature_mask = curvature < threshold
+
+    return low_curvature_mask, threshold
+
+
+def find_continuous_segments(mask, min_length=10):
+    """
+    Find continuous segments of True values in the mask
+
+    Parameters:
+    mask: boolean array
+    min_length: minimum length of segments to keep
+    """
+    # Find where mask changes
+    diff = np.diff(np.concatenate(([False], mask, [False])).astype(int))
+    starts = np.where(diff == 1)[0]
+    ends = np.where(diff == -1)[0]
+
+    segments = []
+    for start, end in zip(starts, ends):
+        if end - start >= min_length:
+            segments.append((start, end))
+
+    return segments
+
+
+def split_section(
+    section: SectionPerimiter,
+    config: SplitConfig | None = None,
+):
+    if config is None:
+        config = SplitConfig()
+
+    # Ensure perimiter is going clockwise and starting from (near) the leading edge
+    # !todo
+
+    # Calculate normalised arc length and curvature
+    s = section.curve.reparameterise_unit().normalise().param
+    curvature = section.curve.curvature()
+
+    # Apply threshold masking
+    low_curvature_mask, threshold = threshold_masking(
+        curvature,
+        config.curvature_threshold_factor,
+    )
+
+    # Find continuous segments of low curvature
+    segments = find_continuous_segments(
+        low_curvature_mask,
+        config.min_segment_length,
+    )
+
+    if len(segments) == 2:
+        success = True
+        error_message = ""
+
+        upper_coords = section.curve.coords[segments[0][0] : segments[0][1]]
+        lower_coords = section.curve.coords[segments[1][0] : segments[1][1]][::-1]
+
+        upper_curve = PlaneCurve.new_unit_speed(upper_coords)
+        lower_curve = PlaneCurve.new_unit_speed(lower_coords)
+    else:
+        success = False
+        error_message = (
+            "Failed to split section into exactly two segments. "
+            f"Found {len(segments)} segments."
+        )
+
+        upper_curve = None
+        lower_curve = None
+
+    return SplitSectionResult(
+        upper_curve=upper_curve,
+        lower_curve=lower_curve,
+        success=success,
+        section=section,
+        segments=segments,
+        curvature_threshold=threshold,
+        s_data=s,
+        curvature_data=curvature,
+        error_message=error_message,
+    )
+
+
+################# Camber Approximation #################
+
+
+@dataclass
+class ApproximateCamberConfig:
+    pass
+
+
+@dataclass
+class CamberProgress:
+    iteration: int
+    delta: float
+    camber: Camber
+    converged: bool
+    error: str | None = None
+
+
+@dataclass
+class ApproximateCamberResult:
+    section: Section | None
+    success: bool
+    iterations: int
+    final_delta: float
+    convergence_history: list[float]
+    error_message: str = ""
+
+    def unwrap(self) -> Section:
+        if not self.success or self.section is None:
+            raise CamberApproximationError(self.error_message)
+        return self.section
+
+
+class ApproximateCamberCallback(Protocol):
+    def __call__(self, progress: CamberProgress) -> bool:
+        """Return False to abort iteration."""
+        pass
+
+
+class CamberApproximationError(Exception):
+    """Custom exception for errors during camber approximation."""
+
+    pass
+
+
+def approximate_camber(
+    section: SectionPerimiter,
+    split_config: SplitConfig | None = None,
+    approx_camber_config: ApproximateCamberConfig | None = None,
+    callback: ApproximateCamberCallback | None = None,
+) -> ApproximateCamberResult:
+    pass
+
+
+###############################################
 
 
 Mask = NDArray[np.bool]
@@ -32,7 +251,7 @@ class ApproxCamberResult:
     section: Section | None
     err_msg: str = ""
 
-    def plot(self, orig_sec: FlatSection):
+    def plot(self, orig_sec: SectionPerimiter):
         fig, ax = plt.subplots()
         plot_plane_curve(self.upper_split, ax)
         plot_plane_curve(self.lower_split, ax)
@@ -45,7 +264,7 @@ class ApproxCamberResult:
 
 
 def find_LE_TE(
-    section: FlatSection,
+    section: SectionPerimiter,
     thresh_LE: float = 0.5,
     thresh_TE: float = 1.0,
     mask_front: Mask | None = None,
@@ -95,7 +314,7 @@ def find_LE_TE(
 def improve_camber(
     camber: PlaneCurve,
     thickness: NDArray,
-    section: FlatSection,
+    section: SectionPerimiter,
     relax_factor: float = 0.2,
 ) -> CamberIteration:
     N = len(thickness)
@@ -136,7 +355,7 @@ def improve_camber(
     )
 
 
-def extend(camber_line: PlaneCurve, section: FlatSection) -> PlaneCurve:
+def extend(camber_line: PlaneCurve, section: SectionPerimiter) -> PlaneCurve:
     # Extend leading and trailing edges
     chord = camber_line.length()
     tangent = camber_line.tangent()
@@ -156,7 +375,7 @@ def extend(camber_line: PlaneCurve, section: FlatSection) -> PlaneCurve:
 
 
 def approx_camber_line(
-    section: FlatSection,
+    section: SectionPerimiter,
     tol: float = 1e-7,
     thresh_LE: float = 0.5,
     thresh_TE: float = 1.0,
