@@ -13,6 +13,89 @@ from geometry.curves import plot_plane_curve
 
 
 @dataclass
+class Thickness:
+    s: NDArray  # Normalised arc length
+    t: NDArray  # Thickness distribution
+
+    def __post_init__(self):
+        if len(self.s) != len(self.t):
+            raise ValueError("s and t arrays must have the same length")
+        if not np.allclose(self.s[0], 0.0) or not np.allclose(self.s[-1], 1.0):
+            raise ValueError("Arc length s must be normalised (0 to 1)")
+
+    @property
+    def max_thickness(self) -> float:
+        """Maximum thickness value."""
+        return np.max(self.t)
+
+    @property
+    def max_thickness_position(self) -> float:
+        """Arc length position of maximum thickness."""
+        max_idx = np.argmax(self.t)
+        return self.s[max_idx]
+
+    @property
+    def thickness_at_TE(self) -> float:
+        """Thickness at trailing edge."""
+        return self.t[-1]
+
+    @property
+    def thickness_at_LE(self) -> float:
+        """Thickness at leading edge."""
+        return self.t[0]
+
+    def plot(self, ax=None, *plot_args, **plot_kwargs):
+        """Plot thickness distribution."""
+        if ax is None:
+            _, ax = plt.subplots()
+        ax.plot(self.s, self.t, *plot_args, **plot_kwargs)
+        ax.set_xlabel("Normalised arc length")
+        ax.set_ylabel("Thickness")
+        ax.grid(True)
+        return ax
+
+    def plot_with_markers(self, ax=None):
+        """Plot thickness distribution with key markers."""
+        if ax is None:
+            _, ax = plt.subplots()
+
+        ax.plot(self.s, self.t, "b-", linewidth=2, label="Thickness")
+
+        # Mark maximum thickness
+        max_pos = self.max_thickness_position
+        max_thick = self.max_thickness
+        ax.plot(
+            max_pos,
+            max_thick,
+            "ro",
+            markersize=8,
+            label=f"Max thickness: {max_thick:.4f}",
+        )
+
+        # Mark leading and trailing edges
+        ax.plot(
+            0,
+            self.thickness_at_LE,
+            "go",
+            markersize=6,
+            label=f"LE thickness: {self.thickness_at_LE:.4f}",
+        )
+        ax.plot(
+            1,
+            self.thickness_at_TE,
+            "mo",
+            markersize=6,
+            label=f"TE thickness: {self.thickness_at_TE:.4f}",
+        )
+
+        ax.set_xlabel("Normalised arc length")
+        ax.set_ylabel("Thickness")
+        ax.legend()
+        ax.grid(True)
+        return ax
+
+
+@dataclass
 class LECircle:
     xc: float
     yc: float
@@ -80,50 +163,24 @@ class MeasuredThicknessParams:
     wedge_TE: float
     ss_stretch_join: float
     ss_grad_TE: float  # Measured from original thickness
-    ss_grad_LE: float  # Measured but typically not used due to steepness
+
+
+@dataclass
+class FittedThicknessParams:
+    """Parameters determined during thickness fitting process."""
+
+    stretch_amount: float
+    stretch_join: float
+    knot_positions: tuple[float, float, float, float]
+    ss_grad_LE: float
 
 
 @dataclass
 class ThicknessParams:
     """Complete set of thickness parameters needed to create a thickness distribution."""
 
-    radius_LE: float
-    s_max_t: float
-    max_t: float
-    curv_max_t: float
-    thickness_TE: float
-    wedge_TE: float
-    ss_stretch_join: float
-    ss_grad_TE: float
-    stretch_amount: float
-    stretch_join: float
-    knot_positions: tuple[float, float, float, float]
-    ss_grad_LE: float
-
-    @classmethod
-    def from_measured_and_fit(
-        cls,
-        measured: MeasuredThicknessParams,
-        stretch_amount: float,
-        stretch_join: float,
-        knot_positions: tuple[float, float, float, float],
-        ss_grad_LE: float,
-    ) -> "ThicknessParams":
-        """Create ThicknessParams from measured parameters and fit parameters."""
-        return cls(
-            radius_LE=measured.radius_LE,
-            s_max_t=measured.s_max_t,
-            max_t=measured.max_t,
-            curv_max_t=measured.curv_max_t,
-            thickness_TE=measured.thickness_TE,
-            wedge_TE=measured.wedge_TE,
-            ss_stretch_join=measured.ss_stretch_join,
-            ss_grad_TE=measured.ss_grad_TE,
-            stretch_amount=stretch_amount,
-            stretch_join=stretch_join,
-            knot_positions=knot_positions,
-            ss_grad_LE=ss_grad_LE,
-        )
+    measured: MeasuredThicknessParams
+    fitted: FittedThicknessParams
 
 
 def measure_thickness(sec: Section, stretch_join: float) -> MeasuredThicknessParams:
@@ -163,7 +220,6 @@ def measure_thickness(sec: Section, stretch_join: float) -> MeasuredThicknessPar
     ss_grad = np.gradient(ss, s)
     ss_grad_spline = make_interp_spline(s, ss_grad)
     ss_grad_TE = ss_grad_spline(1)
-    ss_grad_LE = ss_grad_spline(0)
 
     return MeasuredThicknessParams(
         radius_LE=radius_LE,
@@ -174,7 +230,6 @@ def measure_thickness(sec: Section, stretch_join: float) -> MeasuredThicknessPar
         wedge_TE=wedge_TE,
         ss_stretch_join=ss_stretch_join,
         ss_grad_TE=ss_grad_TE,
-        ss_grad_LE=ss_grad_LE,
     )
 
 
@@ -199,6 +254,11 @@ class ThicknessResult:
         s_stretch = self.stretch(s)
         ss_fit = self.spline(s_stretch)
         return shape_space.inverse(s, ss_fit, self.t_TE)
+
+    def create_thickness(self, s: NDArray) -> Thickness:
+        """Create Thickness dataclass for given arc length distribution."""
+        t = self.create_thickness_distribution(s)
+        return Thickness(s, t)
 
     def create_section(self, camber_line, stream_line=None) -> Section:
         """Create a Section with this thickness distribution."""
@@ -230,7 +290,7 @@ class ThicknessResult:
         ax.plot(self.s_TE, self.ss_TE, "ro", markersize=8, label="Trailing edge")
         ax.plot(self.s_max_t, self.ss_max_t, "go", markersize=8, label="Max thickness")
         ax.plot(
-            self.params.stretch_join,
+            self.params.fitted.stretch_join,
             self.ss_join,
             "bo",
             markersize=8,
@@ -260,7 +320,7 @@ class ThicknessResult:
         return ax
 
     def plot_thickness_comparison(self, original_sec: Section, ax=None):
-        """Plot comparison between original and fitted thickness."""
+        """Plot comparison between original section and fitted thickness."""
         if ax is None:
             _, ax = plt.subplots()
 
@@ -271,28 +331,49 @@ class ThicknessResult:
         ax.plot(s_orig, t_orig, "k-", label="Original", linewidth=2)
         ax.plot(s_orig, t_fit, "r--", label="Fitted", linewidth=2)
 
-        # Highlight key points
+        self._add_thickness_markers(ax)
+        self._format_thickness_plot(ax, "Thickness Distribution Comparison")
+        return ax
+
+    def plot_thickness_comparison_from_thickness(
+        self, original_thickness: Thickness, ax=None
+    ):
+        """Plot comparison between original and fitted thickness using Thickness object."""
+        if ax is None:
+            _, ax = plt.subplots()
+
+        original_thickness.plot(ax, "k-", label="Original", linewidth=2)
+        fitted_thickness = self.create_thickness(original_thickness.s)
+        fitted_thickness.plot(ax, "r--", label="Fitted", linewidth=2)
+
+        self._add_thickness_markers(ax)
+        self._format_thickness_plot(ax, "Thickness Distribution Comparison")
+        return ax
+
+    def _add_thickness_markers(self, ax):
+        """Add key markers to thickness plots."""
         ax.axvline(
-            self.params.s_max_t,
+            self.params.measured.s_max_t,
             color="g",
             linestyle=":",
             alpha=0.7,
             label="Max thickness",
         )
         ax.axvline(
-            self.params.stretch_join,
+            self.params.fitted.stretch_join,
             color="b",
             linestyle=":",
             alpha=0.7,
             label="Stretch join",
         )
 
+    def _format_thickness_plot(self, ax, title: str):
+        """Format thickness plot with labels and styling."""
         ax.set_xlabel("Normalised arc length")
         ax.set_ylabel("Thickness")
-        ax.set_title("Thickness Distribution Comparison")
+        ax.set_title(title)
         ax.legend()
         ax.grid(True, alpha=0.3)
-        return ax
 
     def plot_section_comparison(self, original_sec: Section, ax=None):
         """Plot comparison between original and fitted blade sections."""
@@ -335,22 +416,22 @@ class ThicknessResult:
 
 def create_thickness(params: ThicknessParams) -> ThicknessResult:
     """Create thickness distribution from unified parameters."""
-    stretch_join = params.stretch_join
-    stretch_amount = params.stretch_amount
+    stretch_join = params.fitted.stretch_join
+    stretch_amount = params.fitted.stretch_amount
 
     # Leading edge.
     s_LE = -stretch_amount
-    ss_LE = np.sqrt(params.radius_LE)
+    ss_LE = np.sqrt(params.measured.radius_LE)
 
     # Trailing edge.
     s_TE = 1
-    ss_TE = np.tan(params.wedge_TE) + params.thickness_TE
+    ss_TE = np.tan(params.measured.wedge_TE) + params.measured.thickness_TE
 
     # Maximum thickness.
-    s_max_t = params.s_max_t
-    max_t = params.max_t
-    t_TE = params.thickness_TE
-    curv_max_t = params.curv_max_t
+    s_max_t = params.measured.s_max_t
+    max_t = params.measured.max_t
+    t_TE = params.measured.thickness_TE
+    curv_max_t = params.measured.curv_max_t
     ss_max_t = shape_space.value(s_max_t, max_t, t_TE)
     ss_grad_max_t = shape_space.deriv1(s_max_t, max_t, t_TE, 0)
     ss_curv_max_t = shape_space.deriv2(s_max_t, max_t, t_TE, 0, curv_max_t)
@@ -360,7 +441,7 @@ def create_thickness(params: ThicknessParams) -> ThicknessResult:
 
     # Calculate knot positions based on position of maximum thickness and stretch.
     s_transform = make_interp_spline([0, 1, 2], [s_LE, s_max_t, s_TE], k=1)
-    s_knots = s_transform(np.asarray(params.knot_positions))
+    s_knots = s_transform(np.asarray(params.fitted.knot_positions))
 
     # Calculate knot vector.
     knots = np.r_[np.repeat(s_LE, 4), s_knots, np.repeat(s_TE, 4)]
@@ -385,9 +466,9 @@ def create_thickness(params: ThicknessParams) -> ThicknessResult:
         (value_at(s_max_t), ss_max_t),
         (grad_at(s_max_t), ss_grad_max_t),
         (curv_at(s_max_t), ss_curv_max_t),
-        (value_at(stretch_join), params.ss_stretch_join),
-        (grad_at(s_TE), params.ss_grad_TE),
-        (grad_at(s_LE), params.ss_grad_LE),
+        (value_at(stretch_join), params.measured.ss_stretch_join),
+        (grad_at(s_TE), params.measured.ss_grad_TE),
+        (grad_at(s_LE), params.fitted.ss_grad_LE),
     ]
     assert len(constraints) == n_coef
 
@@ -409,7 +490,7 @@ def create_thickness(params: ThicknessParams) -> ThicknessResult:
         ss_TE=ss_TE,
         s_max_t=s_max_t,
         ss_max_t=ss_max_t,
-        ss_join=params.ss_stretch_join,
+        ss_join=params.measured.ss_stretch_join,
     )
 
 
@@ -422,12 +503,14 @@ def fit_thickness(sec: Section, plot_intermediate: bool = False) -> ThicknessRes
     # Function to calculate parameters from optimisation vector.
     def create_params(x) -> ThicknessParams:
         measured = measure_thickness(sec, x[1])  # x[1] is stretch_join
-        return ThicknessParams.from_measured_and_fit(
+        return ThicknessParams(
             measured=measured,
-            stretch_amount=x[0],
-            stretch_join=x[1],
-            knot_positions=tuple(x[3:]),
-            ss_grad_LE=x[2],  # Use fitted value, not measured
+            fitted=FittedThicknessParams(
+                stretch_amount=x[0],
+                stretch_join=x[1],
+                ss_grad_LE=x[2],
+                knot_positions=tuple(x[3:]),
+            ),
         )
 
     # Function to create thickness from optimisation vector.
@@ -447,48 +530,9 @@ def fit_thickness(sec: Section, plot_intermediate: bool = False) -> ThicknessRes
         ss_fit = res.spline(s_stretch)
         return np.trapezoid((ss - ss_fit) ** 2, s_sec)
 
-    def gt_zero(constraint_func):
-        """Helper function to create scipy constraint dict from lambda"""
-        return {"type": "ineq", "fun": constraint_func}
-
-    # Constraints on optimisation variables.
-    constraints = [
-        gt_zero(lambda x: x[0]),  # stretch_amount must be > 0
-        gt_zero(lambda x: 0.5 - x[0]),  # stretch_amount must be < 0.5
-        gt_zero(lambda x: x[1] - 0.01),  # stretch_join must be > 0.01
-        gt_zero(lambda x: 0.4 - x[1]),  # stretch_join must be < 0.4
-        gt_zero(lambda x: -x[2]),  # ss_grad_LE must be <= 0
-        gt_zero(lambda x: x[4] - x[3] - 0.1),  # knots must be at least 0.1 apart
-        gt_zero(lambda x: x[5] - x[4] - 0.1),  # knots must be at least 0.1 apart
-        gt_zero(lambda x: x[6] - x[5] - 0.1),  # knots must be at least 0.1 apart
-        gt_zero(lambda x: x[3] - 0.01),  # knot_positions[0] must be > 0.01
-        gt_zero(lambda x: 1.99 - x[6]),  # knot_positions[3] must be < 1.99
-    ]
-
-    # Validate initial guess against constraints
-    constraint_names = [
-        "stretch_amount > 0",
-        "stretch_amount < 0.5",
-        "stretch_join > 0.01",
-        "stretch_join < 0.4",
-        "ss_grad_LE <= 0",
-        "knot[1] - knot[0] > 0.1",
-        "knot[2] - knot[1] > 0.1",
-        "knot[3] - knot[2] > 0.1",
-        "knot[0] > 0.01",
-        "knot[3] < 1.99",
-    ]
-
-    violated_constraints = []
-    for i, constraint in enumerate(constraints):
-        value = constraint["fun"](x0)
-        if value <= 0:
-            violated_constraints.append(f"{constraint_names[i]} (value: {value:.3f})")
-
-    if violated_constraints:
-        raise ValueError(
-            f"Initial guess x0={x0} violates constraints: {', '.join(violated_constraints)}"
-        )
+    # Create constraints with validation
+    constraints = _create_thickness_constraints()
+    _validate_initial_guess(x0, constraints)
     e0 = err(x0)
     tol = 1e-4 * e0
     opt = minimize(err, x0, tol=tol, constraints=constraints)
@@ -504,9 +548,47 @@ def fit_thickness(sec: Section, plot_intermediate: bool = False) -> ThicknessRes
     return result
 
 
-def plot_fitted_thickness(sec: Section, res: ThicknessResult):
-    """Legacy plotting function - use ThicknessResult.plot_fit_summary() instead."""
-    print(
-        "Warning: plot_fitted_thickness is deprecated. Use ThicknessResult.plot_fit_summary() instead."
-    )
-    res.plot_fit_summary(sec)
+def _create_thickness_constraints():
+    """Create constraints for thickness fitting optimization."""
+
+    def gt_zero(constraint_func):
+        return {"type": "ineq", "fun": constraint_func}
+
+    return [
+        gt_zero(lambda x: x[0]),  # stretch_amount > 0
+        gt_zero(lambda x: 0.5 - x[0]),  # stretch_amount < 0.5
+        gt_zero(lambda x: x[1] - 0.01),  # stretch_join > 0.01
+        gt_zero(lambda x: 0.4 - x[1]),  # stretch_join < 0.4
+        gt_zero(lambda x: -x[2]),  # ss_grad_LE <= 0
+        gt_zero(lambda x: x[4] - x[3] - 0.1),  # knots spaced >= 0.1
+        gt_zero(lambda x: x[5] - x[4] - 0.1),
+        gt_zero(lambda x: x[6] - x[5] - 0.1),
+        gt_zero(lambda x: x[3] - 0.01),  # knot_positions[0] > 0.01
+        gt_zero(lambda x: 1.99 - x[6]),  # knot_positions[3] < 1.99
+    ]
+
+
+def _validate_initial_guess(x0, constraints):
+    """Validate initial guess against constraints."""
+    constraint_names = [
+        "stretch_amount > 0",
+        "stretch_amount < 0.5",
+        "stretch_join > 0.01",
+        "stretch_join < 0.4",
+        "ss_grad_LE <= 0",
+        "knot[1] - knot[0] > 0.1",
+        "knot[2] - knot[1] > 0.1",
+        "knot[3] - knot[2] > 0.1",
+        "knot[0] > 0.01",
+        "knot[3] < 1.99",
+    ]
+
+    violated_constraints = []
+    for i, constraint in enumerate(constraints):
+        if constraint["fun"](x0) <= 0:
+            violated_constraints.append(constraint_names[i])
+
+    if violated_constraints:
+        raise ValueError(
+            f"Initial guess violates constraints: {', '.join(violated_constraints)}"
+        )
