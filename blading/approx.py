@@ -758,7 +758,7 @@ class ApproximateCamberConfig:
     max_iterations: int = 100
     relax_factor: float = 0.2
     thickness_scale: float = 1.2
-    extension_factor: float = 0.1  # Factor of chord length for LE/TE extension
+    extension_factor: float = 0.02  # Factor of chord length for LE/TE extension
     num_points_le: int = 50
     num_points_te: int = 50
     split_config: SplitConfig = field(default_factory=SplitConfig)
@@ -950,7 +950,7 @@ def _calc_new_camber_thickness(
     return new_camber_coords, new_thickness_values
 
 
-def improve_camber_robust(
+def _improve_camber_robust(
     camber: Camber,
     thickness: Thickness,
     section: SectionPerimiter,
@@ -1002,7 +1002,7 @@ def improve_camber_robust(
                 section=section,
                 upper_targets=upper_targets,
                 lower_targets=lower_targets,
-                error_message=f"Only {successful_intersections}/{N} intersections found (need {min_required})",
+                error_message=f"Only {successful_intersections}/{min_required} intersections found",
             )
 
         # Create new camber and thickness exclusing leading and trailing edges
@@ -1066,18 +1066,156 @@ def improve_camber_robust(
         )
 
 
-################################################################################
-###################### Camber line approximation ###############################
-################################################################################
+@dataclass
+class IterationLoopResult:
+    initial_camber: Camber
+    initial_thickness: Thickness
+
+    success: bool = False
+    final_camber: Camber | None = None
+    final_thickness: Thickness | None = None
+    final_iteration: CamberIterationResult | None = None
+
+    final_delta: float = float("inf")
+    convergence_history: list[float] = field(default_factory=list)
+    iterations: int = 0
+    error_message: str = ""
 
 
 @dataclass
 class CamberProgress:
+    """Progress callback data for camber approximation iterations."""
+
     iteration: int
-    delta: float
-    camber: Camber
-    converged: bool
-    error: str | None = None
+    iteration_result: CamberIterationResult
+
+
+class ApproximateCamberCallback(Protocol):
+    def __call__(self, progress: CamberProgress) -> bool:
+        """Return False to abort iteration."""
+        ...
+
+
+def _run_iteration_loop(
+    camber: Camber,
+    thickness: Thickness,
+    section: SectionPerimiter,
+    config: ApproximateCamberConfig,
+    callback: ApproximateCamberCallback | None,
+) -> IterationLoopResult:
+    """Run the iterative camber improvement loop."""
+    convergence_history = []
+    iterations = 0
+    new_camber = None
+    new_thickness = None
+    iteration_result = None
+
+    new_camber = camber
+    new_thickness = thickness
+
+    while iterations < config.max_iterations:
+        try:
+            iteration_result = _improve_camber_robust(
+                new_camber, new_thickness, section, config
+            )
+
+            if not iteration_result.success:
+                return IterationLoopResult(
+                    success=False,
+                    initial_camber=camber,
+                    initial_thickness=thickness,
+                    final_camber=new_camber,
+                    final_thickness=new_thickness,
+                    final_iteration=iteration_result,
+                    final_delta=float("inf"),
+                    iterations=iterations,
+                    convergence_history=convergence_history,
+                    error_message=f"Iteration {iterations} failed: {iteration_result.error_message}",
+                )
+
+            new_camber = iteration_result.new_camber
+            new_thickness = iteration_result.new_thickness
+
+            # Iteration is successful, expect new camber and thickness to be set
+            assert new_camber is not None, "Expected new camber to be set"
+            assert new_thickness is not None, "Expected new thickness to be set"
+
+            delta = iteration_result.delta
+            convergence_history.append(delta)
+            iterations += 1
+
+            # Check convergence
+            if delta <= config.tolerance:
+                return IterationLoopResult(
+                    success=True,
+                    initial_camber=camber,
+                    initial_thickness=thickness,
+                    final_camber=new_camber,
+                    final_thickness=new_thickness,
+                    final_iteration=iteration_result,
+                    final_delta=delta,
+                    iterations=iterations,
+                    convergence_history=convergence_history,
+                )
+
+            # Handle callback
+            if callback is not None:
+                progress = CamberProgress(
+                    iteration=iterations,
+                    iteration_result=iteration_result,
+                )
+                if not callback(progress):
+                    return IterationLoopResult(
+                        success=False,
+                        initial_camber=camber,
+                        initial_thickness=thickness,
+                        final_camber=new_camber,
+                        final_thickness=new_thickness,
+                        final_iteration=iteration_result,
+                        final_delta=delta,
+                        iterations=iterations,
+                        convergence_history=convergence_history,
+                        error_message="Cancelled by user callback",
+                    )
+
+        except Exception as e:
+            return IterationLoopResult(
+                success=False,
+                initial_camber=camber,
+                initial_thickness=thickness,
+                final_camber=new_camber,
+                final_thickness=new_thickness,
+                final_iteration=iteration_result,
+                final_delta=(
+                    convergence_history[-1] if convergence_history else float("inf")
+                ),
+                iterations=iterations,
+                convergence_history=convergence_history,
+                error_message=f"Unexpected error at iteration {iterations}: {str(e)}",
+            )
+
+    # Max iterations reached
+    final_delta = convergence_history[-1] if convergence_history else float("inf")
+    return IterationLoopResult(
+        success=False,
+        initial_camber=camber,
+        initial_thickness=thickness,
+        final_camber=new_camber,
+        final_thickness=new_thickness,
+        final_iteration=iteration_result,
+        final_delta=final_delta,
+        iterations=iterations,
+        convergence_history=convergence_history,
+        error_message=(
+            f"Failed to converge after {config.max_iterations} iterations "
+            f"(final delta: {delta:.2e}, tolerance: {config.tolerance:.2e})"
+        ),
+    )
+
+
+################################################################################
+###################### Camber line approximation ###############################
+################################################################################
 
 
 @dataclass
@@ -1089,10 +1227,8 @@ class ApproximateCamberResult:
     initial_camber: Camber | None = None
     initial_thickness: Thickness | None = None
 
-    iteration_results: list[CamberIterationResult] = field(default_factory=list)
     iterations: int = 0
-    final_delta: float = float("inf")
-    convergence_history: list[float] = field(default_factory=list)
+    iteration_loop_result: IterationLoopResult | None = None
 
     section: Section | None = None
     success: bool = False
@@ -1163,12 +1299,6 @@ class ApproximateCamberResult:
         )
 
 
-class ApproximateCamberCallback(Protocol):
-    def __call__(self, progress: CamberProgress) -> bool:
-        """Return False to abort iteration."""
-        ...
-
-
 class CamberApproximationError(Exception):
     """Custom exception for errors during camber approximation."""
 
@@ -1219,21 +1349,21 @@ def approximate_camber(
         initial_camber.s, thickness_values, initial_camber.chord
     )
 
-    # TESTING
-    # run one iteration loop
-    improve_result = improve_camber_robust(
-        initial_camber, initial_thickness, section, config
+    # Run iterative improvement
+    loop_result = _run_iteration_loop(
+        initial_camber, initial_thickness, section, config, callback
     )
 
-    if not improve_result.success:
+    if not loop_result.success:
         return ApproximateCamberResult(
             section_perimiter=section,
             split_result=split_result,
             initial_extension_result=initial_extend_result,
             initial_camber=initial_camber,
             initial_thickness=initial_thickness,
-            iteration_results=[improve_result],
-            error_message=improve_result.error_message,
+            iteration_loop_result=loop_result,
+            iterations=loop_result.iterations,
+            error_message=loop_result.error_message,
         )
 
     return ApproximateCamberResult(
@@ -1242,14 +1372,10 @@ def approximate_camber(
         initial_extension_result=initial_extend_result,
         initial_camber=initial_camber,
         initial_thickness=initial_thickness,
-        iteration_results=[improve_result],
-        success=True,  # Set to False until we run the iteration loop
+        iteration_loop_result=loop_result,
+        iterations=loop_result.iterations,
+        success=True,
     )
-
-    # # Run iterative improvement
-    # loop_result = _run_iteration_loop(
-    #     initial_camber, initial_thickness, section, approx_camber_config, callback
-    # )
 
     # # Create final section if successful
     # new_section = None
@@ -1291,99 +1417,6 @@ def approximate_camber(
 
 
 #################
-
-
-@dataclass
-class IterationLoopResult:
-    success: bool
-    camber: Camber
-    thickness: Thickness
-    final_delta: float
-    iterations: int
-    convergence_history: list[float]
-    error_message: str = ""
-
-
-def _run_iteration_loop(
-    camber: Camber,
-    thickness: Thickness,
-    section: SectionPerimiter,
-    config: ApproximateCamberConfig,
-    callback: ApproximateCamberCallback | None,
-) -> IterationLoopResult:
-    """Run the iterative camber improvement loop."""
-    convergence_history = []
-    iterations = 0
-
-    while iterations < config.max_iterations:
-        try:
-            iteration_result = improve_camber_robust(camber, thickness, section, config)
-
-            if not iteration_result.success:
-                return IterationLoopResult(
-                    success=False,
-                    camber=camber,
-                    thickness=thickness,
-                    final_delta=float("inf"),
-                    iterations=iterations,
-                    convergence_history=convergence_history,
-                    error_message=f"Iteration {iterations} failed: {iteration_result.error_message}",
-                )
-
-            camber = iteration_result.camber
-            thickness = iteration_result.thickness
-            final_delta = iteration_result.delta
-            convergence_history.append(final_delta)
-            iterations += 1
-
-            # Check convergence
-            if final_delta <= config.tolerance:
-                return IterationLoopResult(
-                    success=True,
-                    camber=camber,
-                    thickness=thickness,
-                    final_delta=final_delta,
-                    iterations=iterations,
-                    convergence_history=convergence_history,
-                )
-
-            # Handle callback
-            if callback is not None:
-                progress = CamberProgress(iterations, final_delta, camber, False, None)
-                if not callback(progress):
-                    return IterationLoopResult(
-                        success=False,
-                        camber=camber,
-                        thickness=thickness,
-                        final_delta=final_delta,
-                        iterations=iterations,
-                        convergence_history=convergence_history,
-                        error_message="Cancelled by user callback",
-                    )
-
-        except Exception as e:
-            return IterationLoopResult(
-                success=False,
-                camber=camber,
-                thickness=thickness,
-                final_delta=(
-                    convergence_history[-1] if convergence_history else float("inf")
-                ),
-                iterations=iterations,
-                convergence_history=convergence_history,
-                error_message=f"Unexpected error at iteration {iterations}: {str(e)}",
-            )
-
-    # Max iterations reached
-    return IterationLoopResult(
-        success=False,
-        camber=camber,
-        thickness=thickness,
-        final_delta=convergence_history[-1] if convergence_history else float("inf"),
-        iterations=iterations,
-        convergence_history=convergence_history,
-        error_message=f"Failed to converge after {config.max_iterations} iterations",
-    )
 
 
 def _create_final_section_safe(
@@ -1486,7 +1519,7 @@ def create_final_section(
         extended_thickness_no_ends = Thickness(
             t_new[1:-1], extended_thickness_values[1:-1], None
         )
-        iter_result = improve_camber_robust(
+        iter_result = _improve_camber_robust(
             camber_no_ends, extended_thickness_no_ends, section, config
         )
 
