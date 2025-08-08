@@ -12,6 +12,118 @@ from .thickness import Thickness
 from scipy.signal import find_peaks
 
 
+def create_multi_view_plot(
+    plot_functions,
+    camber_line,
+    title="Multi-view Plot",
+    show_closeups=True,
+    main_figsize=(12, 6),
+    single_figsize=(8, 6),
+    chord_fraction=0.02,
+    bias=0.5,
+):
+    """
+    Create a plot with main view and optional close-up views of leading and trailing edges.
+
+    Parameters
+    ----------
+    plot_functions : list of callable
+        List of functions to call for plotting. Each function should accept an ax parameter
+        and plot on the provided axes. Functions will be called for main, LE, and TE axes.
+    camber_line : PlaneCurve
+        Camber line used to determine LE and TE positions for close-up views.
+    title : str, optional
+        Main plot title. Default is "Multi-view Plot".
+    show_closeups : bool, optional
+        Whether to show close-up views of leading and trailing edges. Default is True.
+    main_figsize : tuple, optional
+        Figure size when showing close-ups. Default is (12, 6).
+    single_figsize : tuple, optional
+        Figure size when not showing close-ups. Default is (8, 6).
+    chord_fraction : float, optional
+        Fraction of the chord length to use as the zoom window size for close-up views.
+        Default is 0.02 (2% of chord length).
+    bias : float, optional
+        Bias factor for positioning zoom windows. 0.0 centers the zoom on the LE/TE points.
+        Positive values bias LE towards lower-left and TE towards upper-right.
+        Default is 0.5.
+
+    Returns
+    -------
+    tuple
+        If show_closeups is True: (fig, ax_main, ax_le, ax_te)
+        If show_closeups is False: (fig, ax_main)
+    """
+    if show_closeups:
+        fig = plt.figure(figsize=main_figsize)
+        # Create main axis on the left (70% width)
+        ax_main = fig.add_subplot(1, 3, (1, 2))
+
+        # Create two smaller axes on the right (50% height each)
+        ax_le = fig.add_subplot(2, 3, 3)  # Leading edge (top right)
+        ax_te = fig.add_subplot(2, 3, 6)  # Trailing edge (bottom right)
+    else:
+        fig, ax_main = plt.subplots(figsize=single_figsize)
+        ax_le = None
+        ax_te = None
+
+    # Plot on main axis
+    for plot_func in plot_functions:
+        plot_func(ax_main)
+
+    ax_main.set_title(title)
+    ax_main.legend()
+    ax_main.axis("equal")
+
+    # Plot close-up views if requested
+    if show_closeups and ax_le is not None and ax_te is not None:
+        # Get camber line points for determining leading and trailing edges
+        camber_coords = camber_line.coords
+
+        # Leading edge is at the start of the camber line
+        le_x, le_y = camber_coords[0]
+        # Trailing edge is at the end of the camber line
+        te_x, te_y = camber_coords[-1]
+
+        # Calculate chord length and zoom window size
+        chord_length = camber_line.length()
+        zoom_size = chord_length * chord_fraction
+
+        # Calculate bias offsets for directional positioning
+        bias_offset = zoom_size * bias
+
+        # Plot leading edge close-up
+        for plot_func in plot_functions:
+            plot_func(ax_le)
+
+        ax_le.set_title("Leading Edge")
+        ax_le.axis("equal")
+        # Bias LE towards lower-left: move left (reduce x) and down (reduce y)
+        ax_le.set_xlim(le_x - zoom_size + bias_offset, le_x + zoom_size + bias_offset)
+        ax_le.set_ylim(le_y - zoom_size + bias_offset, le_y + zoom_size + bias_offset)
+        ax_le.set_xticks([])
+        ax_le.set_yticks([])
+        ax_le.grid(True, alpha=0.3)
+
+        # Plot trailing edge close-up
+        for plot_func in plot_functions:
+            plot_func(ax_te)
+
+        ax_te.set_title("Trailing Edge")
+        ax_te.axis("equal")
+        # Bias TE towards upper-right: move right (increase x) and up (increase y)
+        ax_te.set_xlim(te_x - zoom_size - bias_offset, te_x + zoom_size - bias_offset)
+        ax_te.set_ylim(te_y - zoom_size - bias_offset, te_y + zoom_size - bias_offset)
+        ax_te.set_xticks([])
+        ax_te.set_yticks([])
+        ax_te.grid(True, alpha=0.3)
+
+        fig.tight_layout()
+        return fig, ax_main, ax_le, ax_te
+
+    return fig, ax_main
+
+
 ################################################################################
 ########################## Section splitting ###################################
 ################################################################################
@@ -443,23 +555,100 @@ class ExtendCamberResult:
             raise ExtendCamberError(self.error_message)
         return self.extended_line
 
-    def plot(self, ax=None):
+    def plot(self, ax=None, show_closeups=True):
         """
         Plot the camber extension result showing original line, section, and extension lines.
 
         Parameters
         ----------
         ax : matplotlib.axes.Axes, optional
-            Axes object to plot on. If None, creates new figure and axes.
+            Axes object to plot on. If None, creates new figure and axes or multi-view plot.
+        show_closeups : bool, optional
+            Whether to show close-up views of leading and trailing edges. Default is True.
+            Ignored if ax is provided.
 
         Returns
         -------
-        matplotlib.axes.Axes
-            The axes object containing the plot.
+        ...
         """
-        if ax is None:
-            fig, ax = plt.subplots(figsize=(10, 6))
+        # If ax is provided, use single axis plotting (legacy behavior)
+        if ax is not None:
+            self._plot_on_single_axis(ax)
+            return ax
 
+        # Use multi-view plotting utility
+        plot_functions = [
+            lambda ax: self.section.curve.plot(
+                ax=ax, label="Section Curve", color="k", alpha=0.8
+            ),
+            lambda ax: self.original_line.plot(
+                ax=ax, label="Original Camber", color="b", linewidth=2
+            ),
+            lambda ax: ax.plot(
+                self.LE_line[:, 0],
+                self.LE_line[:, 1],
+                "r--",
+                label="LE Extension Line",
+                linewidth=2,
+                alpha=0.8,
+            ),
+            lambda ax: ax.plot(
+                self.TE_line[:, 0],
+                self.TE_line[:, 1],
+                "g--",
+                label="TE Extension Line",
+                linewidth=2,
+                alpha=0.8,
+            ),
+        ]
+
+        # Add extended camber plotting if successful
+        if self.success and self.extended_line is not None:
+            plot_functions.extend(
+                [
+                    lambda ax: self.extended_line.plot(
+                        ax=ax,
+                        label="Extended Camber",
+                        color="m",
+                        linestyle="--",
+                        linewidth=3,
+                        alpha=0.9,
+                    ),
+                    lambda ax: ax.plot(
+                        *self.extended_line.start(),
+                        "co",
+                        markersize=8,
+                        markeredgecolor="k",
+                        markeredgewidth=1,
+                        label="New LE Point",
+                    ),
+                    lambda ax: ax.plot(
+                        *self.extended_line.end(),
+                        "cs",
+                        markersize=8,
+                        markeredgecolor="k",
+                        markeredgewidth=1,
+                        label="New TE Point",
+                    ),
+                ]
+            )
+
+        # Set title based on success
+        title = (
+            "Camber Extension Result (Success)"
+            if self.success
+            else f"Camber Extension Result (Failed - {self.error_message})"
+        )
+
+        return create_multi_view_plot(
+            plot_functions=plot_functions,
+            camber_line=self.extended_line or self.original_line,
+            title=title,
+            show_closeups=show_closeups,
+        )
+
+    def _plot_on_single_axis(self, ax):
+        """Helper method for plotting on a single provided axis."""
         # Plot original camber line
         self.original_line.plot(ax=ax, label="Original Camber", color="b", linewidth=2)
 
@@ -470,15 +659,17 @@ class ExtendCamberResult:
         ax.plot(
             self.LE_line[:, 0],
             self.LE_line[:, 1],
-            "r:",
+            "r--",
             label="LE Extension Line",
+            linewidth=2,
             alpha=0.8,
         )
         ax.plot(
             self.TE_line[:, 0],
             self.TE_line[:, 1],
-            "g:",
+            "g--",
             label="TE Extension Line",
+            linewidth=2,
             alpha=0.8,
         )
 
@@ -489,19 +680,24 @@ class ExtendCamberResult:
                 label="Extended Camber",
                 color="m",
                 linestyle="--",
+                linewidth=3,
                 alpha=0.9,
             )
             # Mark the new endpoints
             ax.plot(
                 *self.extended_line.start(),
                 "co",
+                markersize=10,
                 markeredgecolor="k",
+                markeredgewidth=1,
                 label="New LE Point",
             )
             ax.plot(
                 *self.extended_line.end(),
                 "cs",
+                markersize=10,
                 markeredgecolor="k",
+                markeredgewidth=1,
                 label="New TE Point",
             )
             ax.set_title("Camber Extension Result (Success)")
@@ -511,7 +707,6 @@ class ExtendCamberResult:
         ax.legend()
         ax.axis("equal")
         ax.grid(True, alpha=0.3)
-        return ax
 
 
 def _extend_camber_line(
@@ -917,8 +1112,7 @@ class ApproximateCamberResult:
 
         Returns
         -------
-        matplotlib.axes.Axes
-            The main axes object containing the initial camber plot.
+        ...
         """
         if self.initial_camber is None:
             raise ValueError("Initial camber must be set for plotting.")
@@ -933,82 +1127,29 @@ class ApproximateCamberResult:
             self.initial_thickness is not None
         ), "Expected initial thickness to be valid"
 
-        if show_closeups:
-            fig = plt.figure(figsize=(12, 6))
-            # Create main axis on the left (70% width)
-            ax = fig.add_subplot(1, 3, (1, 2))
+        # Define plot functions
+        plot_functions = [
+            lambda ax: self.section_perimiter.curve.plot(
+                ax=ax, label="Section Curve", color="k"
+            ),
+            lambda ax: self.split_result.upper_curve.plot(
+                ax=ax, label="Upper Curve", color="r"
+            ),
+            lambda ax: self.split_result.lower_curve.plot(
+                ax=ax, label="Lower Curve", color="g"
+            ),
+            lambda ax: self.initial_camber.line.plot(
+                ax=ax, label="Initial Camber", color="b"
+            ),
+        ]
 
-            # Create two smaller axes on the right (50% height each)
-            ax_le = fig.add_subplot(2, 3, 3)  # Leading edge (top right)
-            ax_te = fig.add_subplot(2, 3, 6)  # Trailing edge (bottom right)
-        else:
-            fig, ax = plt.subplots(figsize=(8, 6))
-            ax_le = None
-            ax_te = None
-
-        # Plot on main axis
-        self.section_perimiter.curve.plot(ax=ax, label="Section Curve", color="k")
-        self.split_result.upper_curve.plot(ax=ax, label="Upper Curve", color="r")
-        self.split_result.lower_curve.plot(ax=ax, label="Lower Curve", color="g")
-        self.initial_camber.line.plot(ax=ax, label="Initial Camber", color="b")
-
-        ax.set_title("Initial camber line")
-        ax.legend()
-        ax.axis("equal")
-
-        # Plot close-up views if requested
-        if show_closeups and (ax_le is not None) and (ax_te is not None):
-            # Get camber line points for determining leading and trailing edges
-            camber_coords = self.initial_camber.line.coords
-
-            # Leading edge is at the start of the camber line
-            le_x, le_y = camber_coords[0]
-            # Trailing edge is at the end of the camber line
-            te_x, te_y = camber_coords[-1]
-
-            # Define zoom window size based on local thickness
-            le_thickness = self.initial_thickness.t[0]  # Leading edge thickness
-            te_thickness = self.initial_thickness.t[-1]  # Trailing edge thickness
-            le_zoom_size = le_thickness
-            te_zoom_size = te_thickness
-
-            # Plot leading edge close-up
-            for curve, label, color in [
-                (self.section_perimiter.curve, "Section Curve", "k"),
-                (self.split_result.upper_curve, "Upper Curve", "r"),
-                (self.split_result.lower_curve, "Lower Curve", "g"),
-                (self.initial_camber.line, "Initial Camber", "b"),
-            ]:
-                curve.plot(ax=ax_le, color=color)
-
-            ax_le.set_title("Leading Edge")
-            ax_le.axis("equal")
-            ax_le.set_xlim(le_x - le_zoom_size, le_x + le_zoom_size)
-            ax_le.set_ylim(le_y - le_zoom_size, le_y + le_zoom_size)
-            ax_le.set_xticks([])
-            ax_le.set_yticks([])
-            ax_le.grid(True, alpha=0.3)
-
-            # Plot trailing edge close-up
-            for curve, label, color in [
-                (self.section_perimiter.curve, "Section Curve", "k"),
-                (self.split_result.upper_curve, "Upper Curve", "r"),
-                (self.split_result.lower_curve, "Lower Curve", "g"),
-                (self.initial_camber.line, "Initial Camber", "b"),
-            ]:
-                curve.plot(ax=ax_te, color=color)
-
-            ax_te.set_title("Trailing Edge")
-            ax_te.axis("equal")
-            ax_te.set_xlim(te_x - te_zoom_size, te_x + te_zoom_size)
-            ax_te.set_ylim(te_y - te_zoom_size, te_y + te_zoom_size)
-            ax_te.set_xticks([])
-            ax_te.set_yticks([])
-            ax_te.grid(True, alpha=0.3)
-
-        fig.tight_layout()
-
-        return ax
+        # Use the multi-view plotting utility
+        return create_multi_view_plot(
+            plot_functions=plot_functions,
+            camber_line=self.initial_camber.line,
+            title="Initial camber line",
+            show_closeups=show_closeups,
+        )
 
 
 class ApproximateCamberCallback(Protocol):
