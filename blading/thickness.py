@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 from numpy.typing import NDArray
+from scipy.optimize import curve_fit
+from scipy.signal import savgol_filter
 
 # from .section import Section
 from scipy.interpolate import make_interp_spline, BSpline
@@ -96,52 +98,41 @@ class Thickness:
         return ax
 
     def with_blunt_TE(self) -> "Thickness":
-        # Mask for the rear section of the blade.
-        mask_rear = self.s >= 0.8
-
-        # Calculate curvature (second derivative of thickness)
+        # Calculate thickness gradient
         grad = np.gradient(self.t, self.s)
-        curv = np.gradient(grad, self.s)  # Second derivative (curvature)
-
-        # Find local minima of curvature in the rear section
-        rear_indices = np.where(mask_rear)[0]
-        curv_rear = curv[rear_indices]
-        local_minima = []
-        for i in range(1, len(curv_rear) - 1):
-            if curv_rear[i] < curv_rear[i - 1] and curv_rear[i] < curv_rear[i + 1]:
-                local_minima.append(rear_indices[i])
-
-        if local_minima:
-            # Use the last local minimum
-            last_min_idx = local_minima[-1]
-            # All points after the last local minimum form the high curvature mask
-            mask_high_curv = np.arange(len(self.s)) > last_min_idx
-        else:
-            # No local minima found, use all rear points as high curvature
-            mask_high_curv = mask_rear.copy()
-
-        # Fit straight line through linear part of thickness
-        mask_linear = mask_rear & ~mask_high_curv  # linear part
-        mask_round_TE = mask_rear & mask_high_curv  # round part
-
-        if not np.any(mask_linear):
-            # No linear part found, return original thickness
+        grad_magnitude = np.abs(grad)
+        
+        # Find gradient magnitude at s=0.9 as reference
+        ref_grad_magnitude = np.interp(0.9, self.s, grad_magnitude)
+        
+        # Create mask for high gradient points (>1.1x reference gradient)
+        mask_high_grad = grad_magnitude > 1.1 * ref_grad_magnitude
+        
+        # Create mask for fitting region (s > 0.85) excluding high gradient points
+        mask_fit_region = (self.s > 0.85) & ~mask_high_grad
+        
+        if not np.any(mask_fit_region):
+            # No suitable points for fitting, return original
             return Thickness(self.s.copy(), self.t.copy())
-
-        poly = Polynomial.fit(self.s[mask_linear], self.t[mask_linear], deg=1)
-
-        # Ensure new TE has continuous value.
-        linear_indices = np.where(mask_linear)[0]
-        if len(linear_indices) > 0:
-            y1 = self.t[linear_indices[-1]]
-            y2 = poly(self.s[linear_indices[-1]])
-            poly -= y2 - y1
-
+        
+        # Fit straight line through fitting region
+        poly = Polynomial.fit(self.s[mask_fit_region], self.t[mask_fit_region], deg=1)
+        
+        # Find boundary between linear and high gradient regions for continuity
+        fit_indices = np.where(mask_fit_region)[0]
+        if len(fit_indices) > 0:
+            boundary_idx = fit_indices[-1]
+            # Translate line to be coincident with remaining curve
+            y_curve = self.t[boundary_idx]
+            y_line = poly(self.s[boundary_idx])
+            poly -= y_line - y_curve
+        
         # Create new thickness array
         new_t = self.t.copy()
-        # Extrapolate straight line to TE
-        new_t[mask_round_TE] = poly(self.s[mask_round_TE])
-
+        # Replace high gradient points with straight line approximation
+        mask_replace = (self.s > 0.85) & mask_high_grad
+        new_t[mask_replace] = poly(self.s[mask_replace])
+        
         return Thickness(self.s.copy(), new_t)
 
     def add_round_TE(self, chord: float = 1) -> "Thickness":
