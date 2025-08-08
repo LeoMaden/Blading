@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from enum import Enum
-from .thickness import Thickness, ThicknessParams, create_thickness, fit_LE_circle
+from .thickness import Thickness, ThicknessParams, create_thickness
 from .camber import Camber, CamberParams
 from geometry.curves import PlaneCurve
 import numpy as np
@@ -40,7 +40,7 @@ class Section:
         if isinstance(thickness, Thickness):
             new_thickness = thickness
         elif isinstance(thickness, ThicknessParams):
-            new_thickness = create_thickness(thickness).create_thickness(self.camber.s)
+            new_thickness = create_thickness(thickness).eval(self.camber.s)
         else:
             raise TypeError(
                 f"thickness must be Thickness or ThicknessParams not {type(thickness).__name__}"
@@ -198,7 +198,7 @@ class Section:
 
         # Plot leading edge circle if requested
         if show_LE_circle:
-            sc, r = fit_LE_circle(self.thickness)
+            sc, r = self.thickness.fit_LE_circle()
             centre = self.camber.line.interpolate([sc]).coords
             xc, yc = centre[0, 0], centre[0, 1]
             circle = mplCircle(
@@ -246,7 +246,7 @@ class Section:
 
         # Update labels to distinguish from comparison
         for line in ax.get_lines():
-            if line.get_label() and not line.get_label().startswith("_"):
+            if line.get_label() and not line.get_label().startswith("_"):  # type: ignore
                 line.set_label(f"Original {line.get_label()}")
 
         # Plot the comparison object

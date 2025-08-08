@@ -1,9 +1,7 @@
+from icecream import ic
 from dataclasses import dataclass
-from numpy.typing import NDArray
-from scipy.optimize import curve_fit
-from scipy.signal import savgol_filter
-
-# from .section import Section
+from functools import cached_property
+from numpy.typing import NDArray, ArrayLike
 from scipy.interpolate import make_interp_spline, BSpline
 import numpy as np
 from . import shape_space
@@ -15,7 +13,7 @@ from scipy.optimize import minimize, fmin
 from geometry.curves import plot_plane_curve
 
 
-@dataclass
+@dataclass(frozen=True)
 class Thickness:
     s: NDArray  # Normalised arc length
     t: NDArray  # Thickness distribution
@@ -32,26 +30,77 @@ class Thickness:
             raise ValueError("Chord must be defined to calculate t_over_c")
         return self.t / self.chord
 
-    @property
-    def max_thickness(self) -> float:
+    @cached_property
+    def t_spline(self) -> BSpline:
+        """Cubic BSpline representation of the thickness distribution."""
+        return make_interp_spline(self.s, self.t, k=3)
+
+    @cached_property
+    def max_t(self) -> float:
         """Maximum thickness value."""
-        return np.max(self.t)
+        return float(self.t_spline(self.s_max_t))
+
+    @cached_property
+    def s_max_t(self) -> float:
+        """Normalised arc length position of maximum thickness."""
+        (s_max_t,) = fmin(lambda s: -self.t_spline(s), x0=0.5, disp=False)  # type: ignore
+        return s_max_t
 
     @property
-    def max_thickness_position(self) -> float:
-        """Arc length position of maximum thickness."""
-        max_idx = np.argmax(self.t)
-        return self.s[max_idx]
-
-    @property
-    def thickness_at_TE(self) -> float:
-        """Thickness at trailing edge."""
+    def t_TE(self) -> float:
+        """Thickness at leading edge."""
         return self.t[-1]
 
-    @property
-    def thickness_at_LE(self) -> float:
-        """Thickness at leading edge."""
-        return self.t[0]
+    @cached_property
+    def shape_space(self) -> NDArray:
+        """Shape space representation of the thickness distribution."""
+        if self.t_TE == 0:
+            raise ValueError(
+                "Trailing edge thickness must be non-zero for shape space representation"
+            )
+        return shape_space.value(self.s, self.t, self.t_TE)
+
+    @cached_property
+    def ss_spline(self) -> BSpline:
+        """Cubic BSpline representation of the shape space."""
+        return make_interp_spline(self.s, self.shape_space, k=3)
+
+    @cached_property
+    def wedge_TE(self) -> float:
+        """Wedge angle at trailing edge in radians."""
+        grad_TE = (self.t[-1] - self.t[-2]) / (self.s[-1] - self.s[-2])
+        return -np.arctan(grad_TE)
+
+    def fit_LE_circle(self, num_points: int = 5) -> tuple[float, float]:
+        """
+        Fit a circle to the leading edge of the thickness distribution.
+
+        Returns
+        -------
+        tuple[float, float]
+            (centre x-coordinate, radius)
+        """
+        if self.chord is None:
+            raise ValueError("Chord must be defined for LE circle fitting")
+
+        s = self.s[:num_points]
+        t_over_c = self.t_over_c[:num_points]
+
+        upper = np.c_[s, 0.5 * t_over_c]
+        lower = np.c_[s, -0.5 * t_over_c]
+        points = np.r_[upper, lower[::-1]]
+
+        s_centre, t_over_c_centre, rad_over_c, _ = taubinSVD(points)
+
+        # Check if the leading edge circle is centred within 0.01%
+        if not np.allclose(t_over_c_centre, 0, atol=1e-4):
+            raise RuntimeError(
+                "Leading edge circle is not centred. "
+                f"Centre at ({s_centre:.4f}, {t_over_c_centre:.4f}) (non-dimensional)"
+            )
+
+        rad = rad_over_c * self.chord  # type: ignore
+        return s_centre, rad
 
     def plot(self, ax=None, *plot_args, **plot_kwargs):
         """Plot thickness distribution."""
@@ -63,47 +112,13 @@ class Thickness:
         ax.grid(True)
         return ax
 
-    def plot_with_markers(self, ax=None):
-        """Plot thickness distribution with key markers."""
-        if ax is None:
-            _, ax = plt.subplots()
-
-        ax.plot(self.s, self.t, "b-", linewidth=2, label="Thickness")
-
-        # Mark maximum thickness
-        max_pos = self.max_thickness_position
-        max_thick = self.max_thickness
-        ax.plot(
-            max_pos,
-            max_thick,
-            "ro",
-            markersize=8,
-            label=f"Max thickness: {max_thick:.4f}",
-        )
-
-        # Mark leading and trailing edges
-        ax.plot(
-            0,
-            self.thickness_at_LE,
-            "go",
-            markersize=6,
-            label=f"LE thickness: {self.thickness_at_LE:.4f}",
-        )
-        ax.plot(
-            1,
-            self.thickness_at_TE,
-            "mo",
-            markersize=6,
-            label=f"TE thickness: {self.thickness_at_TE:.4f}",
-        )
-
-        ax.set_xlabel("Normalised arc length")
-        ax.set_ylabel("Thickness")
-        ax.legend()
-        ax.grid(True)
-        return ax
-
     def with_blunt_TE(self) -> "Thickness":
+        """Create a new Thickness with a blunt trailing edge."""
+        if self.t_TE != 0:
+            raise ValueError(
+                f"Trailing edge is already blunt: thickness is {self.t_TE}"
+            )
+
         # Calculate thickness gradient
         grad = np.gradient(self.t, self.s)
         grad_magnitude = np.abs(grad)
@@ -142,8 +157,11 @@ class Thickness:
         return Thickness(self.s.copy(), new_t, self.chord)
 
     def with_round_TE(self) -> "Thickness":
+        """Create a new Thickness with a round trailing edge."""
         if self.chord is None:
             raise ValueError("Chord must be defined for round TE calculation")
+        if self.t_TE == 0:
+            raise ValueError("Trailing edge must be blunt to create a round TE.")
 
         # Thickness relative to chord.
         t_over_c = self.t / self.chord
@@ -175,74 +193,9 @@ class Thickness:
         return Thickness(self.s.copy(), new_t, self.chord)
 
 
-# @dataclass
-# class LECircle:
-#     xc: float
-#     yc: float
-#     radius: float
-#     rms_err: float
-#     fit_points: NDArray
-
-#     def plot(self, ax=None):
-#         if ax is None:
-#             _, ax = plt.subplots()
-#         theta = np.linspace(0, 2 * np.pi, 180)
-#         x = self.xc + self.radius * np.cos(theta)
-#         y = self.yc + self.radius * np.sin(theta)
-
-#         ax.plot(x, y, "b--", label="LE circle")
-#         ax.plot(*self.fit_points.T, "b.", label="LE points")
-
-#         ax.legend()
-#         plt.axis("equal")
-
-#         # Zoom into leading edge region
-#         x_range = self.radius * 3
-#         y_range = self.radius * 3
-#         ax.set_xlim(self.xc - x_range, self.xc + x_range)
-#         ax.set_ylim(self.yc - y_range, self.yc + y_range)
-
-
-def fit_LE_circle(thickness: Thickness, num_points: int = 5, centred_tol: float = 1e-4):
-    s = thickness.s[:num_points]
-    t_over_c = thickness.t_over_c[:num_points]
-
-    upper = np.c_[s, 0.5 * t_over_c]
-    lower = np.c_[s, -0.5 * t_over_c]
-    points = np.r_[upper, lower[::-1]]
-
-    s_centre, t_over_c_centre, rad_over_c, _ = taubinSVD(points)
-
-    if not np.allclose(t_over_c_centre, 0, atol=centred_tol):
-        raise RuntimeError(
-            "Leading edge circle is not centred. "
-            f"Centre at ({s_centre:.4f}, {t_over_c_centre:.4f}) (non-dimensional)"
-        )
-
-    rad = rad_over_c * thickness.chord  # type: ignore
-
-    return s_centre, rad
-
-
-def stretch_func(amount, join):
-    b = [amount, 0, 0, 0]
-    A = np.zeros((4, 4))
-    x1 = 0
-    x2 = join
-    A[0, :] = [x1**3, x1**2, x1, 1]
-    A[1, :] = [x2**3, x2**2, x2, 1]
-    A[2, :] = [3 * x2**2, 2 * x2, 1, 0]
-    A[3, :] = [6 * x2, 2, 0, 0]
-    coefs = np.linalg.solve(A, b)
-    poly = Polynomial(coefs[::-1])
-
-    def stretch(s):
-        s_front = s[s <= join]
-        s_rear = s[s > join]
-        new_s_front = s_front - poly(s_front)
-        return np.r_[new_s_front, s_rear]
-
-    return stretch
+################################################################################
+##################### Thickness parameters definitions #########################
+################################################################################
 
 
 @dataclass
@@ -257,6 +210,7 @@ class MeasuredThicknessParams:
     wedge_TE: float
     ss_stretch_join: float
     ss_grad_TE: float  # Measured from original thickness
+    chord: Optional[float]
 
 
 @dataclass
@@ -283,114 +237,62 @@ def measure_thickness(
     """Measure thickness parameters that can be directly extracted from a blade section."""
     s, t = thickness.s, thickness.t
 
-    # Find point of maximum thickness.
-    t_spline = make_interp_spline(s, t)
-    (s_max_t,) = fmin(lambda s: -t_spline(s), x0=0.5, disp=False)  # type: ignore
-    max_t = t_spline(s_max_t)
-
-    # Trailing edge thickness (assuming blunt TE).
-    t_TE = t[-1]
-
-    # Wedge angle at TE.
-    grad = np.gradient(t, s)
-    wedge_TE = -np.arctan(grad[-1])
-
     # Thickness curvature at maximum thickness.
+    grad = np.gradient(t, s)
     curv = np.gradient(grad, s)
     curv_spline = make_interp_spline(s, curv)
-    curv_max_t = curv_spline(s_max_t)
+    curv_max_t = curv_spline(thickness.s_max_t)
 
-    # Leading edge radius.
-    _, radius_LE = fit_LE_circle(thickness)
+    # Fit circle to leading edge to get radius.
+    _, radius_LE = thickness.fit_LE_circle()
 
-    ##### Shape space #####
+    # Shape space vlaue at stretch join.
+    ss_spline = thickness.ss_spline
+    ss_stretch_join = float(ss_spline(stretch_join))
 
-    # Extrapolate LE and TE singularities.
-    ss = shape_space.value(s, t, t[-1])
-    ss_spline = make_interp_spline(s, ss)
-    ss_stretch_join = ss_spline(stretch_join)
+    # Shape space gradient at trailing edge.
+    ss = thickness.shape_space
     ss_grad = np.gradient(ss, s)
     ss_grad_spline = make_interp_spline(s, ss_grad)
     ss_grad_TE = ss_grad_spline(1)
 
     return MeasuredThicknessParams(
         radius_LE=radius_LE,
-        s_max_t=s_max_t,
-        max_t=max_t,
+        s_max_t=thickness.s_max_t,
+        max_t=thickness.max_t,
         curv_max_t=curv_max_t,
-        thickness_TE=t_TE,
-        wedge_TE=wedge_TE,
+        thickness_TE=thickness.t_TE,
+        wedge_TE=thickness.wedge_TE,
         ss_stretch_join=ss_stretch_join,
         ss_grad_TE=ss_grad_TE,
+        chord=thickness.chord,
     )
 
 
-@dataclass
+################################################################################
+####################### Create thickness from parameters #######################
+################################################################################
+
+
+@dataclass(frozen=True)
 class ThicknessResult:
-    """Result of thickness parameterisation with improved usability and plotting."""
+    """Result of creating a thickness distribution from a set of parameters."""
 
     ss_spline: BSpline
     stretch_func: Callable[[NDArray], NDArray]
-    params: ThicknessParams
     ss_control_points: NDArray
-    original: Optional[Thickness] = None
+    params: ThicknessParams  # Parameters used to create this thickness distribution.
 
-    def get_thickness(self, s: Optional[NDArray] = None) -> Thickness:
-        """Get thickness distribution for given arc length or the original section."""
-        if s is None and self.original is not None:
-            s = self.original.s
-        elif s is None:
-            raise ValueError("Either provide arc length or use original section.")
+    def eval(self, s: ArrayLike) -> Thickness:
+        """Evaluate thickness distribution at the given normalised arc length `s`."""
+        s = np.asarray(s)
 
-        # Apply stretch function to arc length.
         s_stretch = self.stretch_func(s)
-        # Evaluate spline at stretched arc length.
         ss = self.ss_spline(s_stretch)
-        # Convert shape space value back to thickness distribution.
         t = shape_space.inverse(s, ss, self.params.measured.thickness_TE)
-        chord = self.original.chord if self.original else None
+        chord = self.params.measured.chord
+
         return Thickness(s, t, chord)
-
-    def compare_shape_space(self, ax=None):
-        """Plot comparison of fitted spline and original shape space representation."""
-        if self.original is None:
-            raise ValueError("Original thickness must exist for comparison")
-
-        if ax is None:
-            _, ax = plt.subplots()
-
-        # Calculate shape space domain
-        s_LE = -self.params.fitted.stretch_amount
-        s_TE = 1.0
-        s_plot = np.linspace(s_LE, s_TE, 200)
-
-        # Plot fitted spline
-        ss_fit = self.ss_spline(s_plot)
-        ax.plot(s_plot, ss_fit, "r-", linewidth=2, label="Fitted spline")
-
-        # Plot control points
-        ax.plot(
-            self.ss_control_points[:, 0],
-            self.ss_control_points[:, 1],
-            "bo",
-            markersize=8,
-            label="Control points",
-        )
-
-        # Plot original shape space representation
-        s_orig = self.original.s
-        t_orig = self.original.t
-        ss_orig = shape_space.value(s_orig, t_orig, t_orig[-1])
-        s_stretch_orig = self.stretch_func(s_orig)
-        ax.plot(s_stretch_orig, ss_orig, "k-", alpha=0.7, linewidth=2, label="Original")
-
-        ax.set_xlabel("Stretched arc length")
-        ax.set_ylabel("Shape space value")
-        ax.set_title("Shape Space Comparison")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-
-        return ax
 
     # def create_thickness_distribution(self, s: NDArray) -> NDArray:
     #     """Create thickness distribution for given arc length distribution."""
@@ -580,7 +482,7 @@ def create_thickness(params: ThicknessParams) -> ThicknessResult:
     ss_curv_max_t = shape_space.deriv2(s_max_t, max_t, t_TE, 0, curv_max_t)
 
     # Calculate stretching function.
-    stretch = stretch_func(stretch_amount, stretch_join)
+    stretch_func = _get_stretch_func(stretch_amount, stretch_join)
 
     # Calculate knot positions based on position of maximum thickness and stretch.
     s_transform = make_interp_spline([0, 1, 2], [s_LE, s_max_t, s_TE], k=1)
@@ -632,13 +534,66 @@ def create_thickness(params: ThicknessParams) -> ThicknessResult:
 
     return ThicknessResult(
         ss_spline=ss_spline,
-        stretch_func=stretch,
+        stretch_func=stretch_func,
         params=params,
         ss_control_points=ss_control_points,
     )
 
 
-def fit_thickness(thickness: Thickness) -> ThicknessResult:
+####################################################################
+################## Fit thickness parameterisation ##################
+####################################################################
+
+
+@dataclass
+class FitThicknessResult:
+    """Result of fitting a thickness parameterisation to a given thickness distribution."""
+
+    result: ThicknessResult
+    original: Thickness
+
+    def compare_shape_space(self, ax=None):
+        """Plot comparison of fitted spline and original shape space representation."""
+        result = self.result
+
+        if ax is None:
+            _, ax = plt.subplots()
+
+        # Calculate shape space domain
+        s_LE = -result.params.fitted.stretch_amount
+        s_TE = 1.0
+        s_plot = np.linspace(s_LE, s_TE, 200)
+
+        # Plot fitted spline
+        ss_fit = result.ss_spline(s_plot)
+        ax.plot(s_plot, ss_fit, "r-", linewidth=2, label="Fitted spline")
+
+        # Plot control points
+        ax.plot(
+            result.ss_control_points[:, 0],
+            result.ss_control_points[:, 1],
+            "bo",
+            markersize=8,
+            label="Control points",
+        )
+
+        # Plot original shape space representation
+        s_orig = self.original.s
+        t_orig = self.original.t
+        ss_orig = shape_space.value(s_orig, t_orig, t_orig[-1])
+        s_stretch_orig = result.stretch_func(s_orig)
+        ax.plot(s_stretch_orig, ss_orig, "k-", alpha=0.7, linewidth=2, label="Original")
+
+        ax.set_xlabel("Stretched arc length")
+        ax.set_ylabel("Shape space value")
+        ax.set_title("Shape Space Comparison")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        return ax
+
+
+def fit_thickness(thickness: Thickness) -> FitThicknessResult:
     """Fit thickness parameterisation to a blade section."""
 
     # Initial guess of fitting parameters.
@@ -684,9 +639,35 @@ def fit_thickness(thickness: Thickness) -> ThicknessResult:
 
     x = opt.x
     result = create(x)
-    result.original = thickness  # Store original thickness for reference
 
-    return result
+    return FitThicknessResult(
+        result=result,
+        original=thickness,
+    )
+
+
+# Private functions
+
+
+def _get_stretch_func(amount, join):
+    b = [amount, 0, 0, 0]
+    A = np.zeros((4, 4))
+    x1 = 0
+    x2 = join
+    A[0, :] = [x1**3, x1**2, x1, 1]
+    A[1, :] = [x2**3, x2**2, x2, 1]
+    A[2, :] = [3 * x2**2, 2 * x2, 1, 0]
+    A[3, :] = [6 * x2, 2, 0, 0]
+    coefs = np.linalg.solve(A, b)
+    poly = Polynomial(coefs[::-1])
+
+    def stretch(s):
+        s_front = s[s <= join]
+        s_rear = s[s > join]
+        new_s_front = s_front - poly(s_front)
+        return np.r_[new_s_front, s_rear]
+
+    return stretch
 
 
 def _create_thickness_fitting_constraints():
