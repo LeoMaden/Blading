@@ -520,7 +520,7 @@ def initial_thickness_guess(
         upper_curve = upper_curve.interpolate(lower_curve.param, k=2)
 
     thickness_values = np.linalg.norm(upper_curve.coords - lower_curve.coords, axis=1)
-    return Thickness(upper_curve.param, thickness_values)
+    return Thickness(upper_curve.param, thickness_values, None)
 
 
 def improve_camber_robust(
@@ -588,7 +588,7 @@ def improve_camber_robust(
         camber_coords = (upper_coords + lower_coords) / 2
         new_camber = Camber(PlaneCurve.new_unit_speed(camber_coords))
         new_thickness_values = np.linalg.norm(upper_coords - lower_coords, axis=1)
-        new_thickness = Thickness(thickness.s, new_thickness_values)
+        new_thickness = Thickness(thickness.s, new_thickness_values, new_camber.chord)
 
         # Apply relaxation
         delta_coords = (
@@ -655,7 +655,9 @@ def create_final_section(
                 error_message="Refined parameter values outside valid range [0,1]",
             )
 
-        refined_camber = camber_line.interpolate(t_new, k=2)
+        refined_camber_line = camber_line.interpolate(t_new, k=2)
+        refined_camber = Camber(refined_camber_line)
+        final_chord = refined_camber.chord
 
         # Extend thickness array to match new parameterization
         if len(thickness.t) == 0:
@@ -672,16 +674,16 @@ def create_final_section(
         ]
 
         # Re-calculate thicknesses with robust error handling
-        if len(refined_camber.coords) < 3:
+        if len(refined_camber_line.coords) < 3:
             return FinalSectionResult(
                 section=None,
                 success=False,
                 error_message="Refined camber has insufficient points",
             )
 
-        camber_no_ends = Camber(refined_camber[1:-1])
+        camber_no_ends = Camber(refined_camber_line[1:-1])
         extended_thickness_no_ends = Thickness(
-            t_new[1:-1], extended_thickness_values[1:-1]
+            t_new[1:-1], extended_thickness_values[1:-1], None
         )
         iter_result = improve_camber_robust(
             camber_no_ends, extended_thickness_no_ends, section, config
@@ -690,11 +692,11 @@ def create_final_section(
         if not iter_result.success:
             # Fallback: use original thickness distribution
             final_thickness_values = np.r_[0, extended_thickness_values[1:-1], 0]
-            final_thickness = Thickness(t_new, final_thickness_values)
+            final_thickness = Thickness(t_new, final_thickness_values, final_chord)
             return FinalSectionResult(
                 section=Section(
                     thickness=final_thickness,
-                    camber=Camber(refined_camber),
+                    camber=Camber(refined_camber_line),
                     stream_line=section.stream_line,
                 ),
                 success=False,
@@ -703,12 +705,12 @@ def create_final_section(
 
         # Success case: use recalculated thickness
         final_thickness_values = np.r_[0, iter_result.thickness.t, 0]
-        final_thickness = Thickness(t_new, final_thickness_values)
+        final_thickness = Thickness(t_new, final_thickness_values, final_chord)
 
         return FinalSectionResult(
             section=Section(
                 thickness=final_thickness,
-                camber=Camber(refined_camber),
+                camber=Camber(refined_camber_line),
                 stream_line=section.stream_line,
             ),
             success=True,

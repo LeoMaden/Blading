@@ -1,10 +1,11 @@
 from dataclasses import dataclass, field
 from enum import Enum
-from .thickness import Thickness, ThicknessParams, create_thickness
+from .thickness import Thickness, ThicknessParams, create_thickness, fit_LE_circle
 from .camber import Camber, CamberParams
 from geometry.curves import PlaneCurve
 import numpy as np
 from numpy.typing import NDArray
+from matplotlib.patches import Circle as mplCircle
 
 
 class ReferencePoint(Enum):
@@ -41,7 +42,9 @@ class Section:
         elif isinstance(thickness, ThicknessParams):
             new_thickness = create_thickness(thickness).create_thickness(self.camber.s)
         else:
-            raise TypeError("thickness must be Thickness or ThicknessParams")
+            raise TypeError(
+                f"thickness must be Thickness or ThicknessParams not {type(thickness).__name__}"
+            )
 
         return Section(
             thickness=new_thickness,
@@ -143,7 +146,11 @@ class Section:
         return np.array([cx, cy])
 
     def plot(
-        self, ax=None, show_reference_point: bool = True, show_camber_line: bool = True
+        self,
+        ax=None,
+        show_reference_point: bool = True,
+        show_camber_line: bool = True,
+        show_LE_circle: bool = True,
     ):
         """Plot the blade section showing upper/lower curves, camber line, and reference point.
 
@@ -188,6 +195,22 @@ class Section:
                 markersize=8,
                 label=f"Reference point ({ref_name})",
             )
+
+        # Plot leading edge circle if requested
+        if show_LE_circle:
+            sc, r = fit_LE_circle(self.thickness)
+            centre = self.camber.line.interpolate([sc]).coords
+            xc, yc = centre[0, 0], centre[0, 1]
+            circle = mplCircle(
+                (xc, yc),
+                r,
+                color="orange",
+                fill=False,
+                linestyle="--",
+                linewidth=1.5,
+                label="Leading edge circle",
+            )
+            ax.add_artist(circle)
 
         # Formatting
         ax.set_xlabel("X coordinate")

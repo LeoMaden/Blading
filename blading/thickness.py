@@ -10,21 +10,27 @@ from . import shape_space
 import matplotlib.pyplot as plt
 from circle_fit import taubinSVD
 from numpy.polynomial import Polynomial
-from typing import Callable
+from typing import Callable, Optional
 from scipy.optimize import minimize, fmin
 from geometry.curves import plot_plane_curve
-
-Section = NDArray  # Placeholder for Section type
 
 
 @dataclass
 class Thickness:
     s: NDArray  # Normalised arc length
     t: NDArray  # Thickness distribution
+    chord: Optional[float]
 
     def __post_init__(self):
         if len(self.s) != len(self.t):
             raise ValueError("s and t arrays must have the same length")
+
+    @property
+    def t_over_c(self) -> NDArray:
+        """Thickness to chord ratio."""
+        if self.chord is None:
+            raise ValueError("Chord must be defined to calculate t_over_c")
+        return self.t / self.chord
 
     @property
     def max_thickness(self) -> float:
@@ -113,7 +119,7 @@ class Thickness:
 
         if not np.any(mask_fit_region):
             # No suitable points for fitting, return original
-            return Thickness(self.s.copy(), self.t.copy())
+            return Thickness(self.s.copy(), self.t.copy(), self.chord)
 
         # Fit straight line through fitting region
         poly = Polynomial.fit(self.s[mask_fit_region], self.t[mask_fit_region], deg=1)
@@ -133,11 +139,14 @@ class Thickness:
         mask_replace = (self.s > 0.85) & mask_high_grad
         new_t[mask_replace] = poly(self.s[mask_replace])
 
-        return Thickness(self.s.copy(), new_t)
+        return Thickness(self.s.copy(), new_t, self.chord)
 
-    def with_round_TE(self, chord: float = 1) -> "Thickness":
+    def with_round_TE(self) -> "Thickness":
+        if self.chord is None:
+            raise ValueError("Chord must be defined for round TE calculation")
+
         # Thickness relative to chord.
-        t_over_c = self.t / chord
+        t_over_c = self.t / self.chord
 
         # Find trailing edge angle.
         x1, x2 = self.s[[-2, -1]]
@@ -161,44 +170,58 @@ class Thickness:
         # Create new thickness array
         new_t_over_c = t_over_c.copy()
         new_t_over_c[mask_round_TE] = np.interp(self.s[mask_round_TE], x_te, y_te)
-        new_t = new_t_over_c * chord
+        new_t = new_t_over_c * self.chord
 
-        return Thickness(self.s.copy(), new_t)
-
-
-@dataclass
-class LECircle:
-    xc: float
-    yc: float
-    radius: float
-    rms_err: float
-    fit_points: NDArray
-
-    def plot(self, ax=None):
-        if ax is None:
-            _, ax = plt.subplots()
-        theta = np.linspace(0, 2 * np.pi, 180)
-        x = self.xc + self.radius * np.cos(theta)
-        y = self.yc + self.radius * np.sin(theta)
-
-        ax.plot(x, y, "b--", label="LE circle")
-        ax.plot(*self.fit_points.T, "b.", label="LE points")
-
-        ax.legend()
-        plt.axis("equal")
-
-        # Zoom into leading edge region
-        x_range = self.radius * 3
-        y_range = self.radius * 3
-        ax.set_xlim(self.xc - x_range, self.xc + x_range)
-        ax.set_ylim(self.yc - y_range, self.yc + y_range)
+        return Thickness(self.s.copy(), new_t, self.chord)
 
 
-def fit_LE_circle(sec: Section, num_LE: int = 11):
-    i = num_LE // 2 + 1
-    LE_points = np.r_[sec.lower_curve().coords[:i][::-1], sec.upper_curve().coords[1:i]]
-    xc, yc, radius, rms_err = taubinSVD(LE_points)
-    return LECircle(xc, yc, radius, rms_err, LE_points)
+# @dataclass
+# class LECircle:
+#     xc: float
+#     yc: float
+#     radius: float
+#     rms_err: float
+#     fit_points: NDArray
+
+#     def plot(self, ax=None):
+#         if ax is None:
+#             _, ax = plt.subplots()
+#         theta = np.linspace(0, 2 * np.pi, 180)
+#         x = self.xc + self.radius * np.cos(theta)
+#         y = self.yc + self.radius * np.sin(theta)
+
+#         ax.plot(x, y, "b--", label="LE circle")
+#         ax.plot(*self.fit_points.T, "b.", label="LE points")
+
+#         ax.legend()
+#         plt.axis("equal")
+
+#         # Zoom into leading edge region
+#         x_range = self.radius * 3
+#         y_range = self.radius * 3
+#         ax.set_xlim(self.xc - x_range, self.xc + x_range)
+#         ax.set_ylim(self.yc - y_range, self.yc + y_range)
+
+
+def fit_LE_circle(thickness: Thickness, num_points: int = 5, centred_tol: float = 1e-4):
+    s = thickness.s[:num_points]
+    t_over_c = thickness.t_over_c[:num_points]
+
+    upper = np.c_[s, 0.5 * t_over_c]
+    lower = np.c_[s, -0.5 * t_over_c]
+    points = np.r_[upper, lower[::-1]]
+
+    s_centre, t_over_c_centre, rad_over_c, _ = taubinSVD(points)
+
+    if not np.allclose(t_over_c_centre, 0, atol=centred_tol):
+        raise RuntimeError(
+            "Leading edge circle is not centred. "
+            f"Centre at ({s_centre:.4f}, {t_over_c_centre:.4f}) (non-dimensional)"
+        )
+
+    rad = rad_over_c * thickness.chord  # type: ignore
+
+    return s_centre, rad
 
 
 def stretch_func(amount, join):
@@ -254,12 +277,11 @@ class ThicknessParams:
     fitted: FittedThicknessParams
 
 
-def measure_thickness(sec: Section, stretch_join: float) -> MeasuredThicknessParams:
+def measure_thickness(
+    thickness: Thickness, stretch_join: float
+) -> MeasuredThicknessParams:
     """Measure thickness parameters that can be directly extracted from a blade section."""
-    s = sec.normalised_arc_length
-
-    ##### Thickness #####
-    t = sec.thickness
+    s, t = thickness.s, thickness.t
 
     # Find point of maximum thickness.
     t_spline = make_interp_spline(s, t)
@@ -279,8 +301,7 @@ def measure_thickness(sec: Section, stretch_join: float) -> MeasuredThicknessPar
     curv_max_t = curv_spline(s_max_t)
 
     # Leading edge radius.
-    LE_circle = fit_LE_circle(sec)
-    radius_LE = LE_circle.radius
+    _, radius_LE = fit_LE_circle(thickness)
 
     ##### Shape space #####
 
@@ -308,181 +329,232 @@ def measure_thickness(sec: Section, stretch_join: float) -> MeasuredThicknessPar
 class ThicknessResult:
     """Result of thickness parameterisation with improved usability and plotting."""
 
-    spline: BSpline
-    stretch: Callable[[NDArray], NDArray]
+    ss_spline: BSpline
+    stretch_func: Callable[[NDArray], NDArray]
     params: ThicknessParams
-    t_TE: float
-    s_LE: float
-    ss_LE: float
-    s_TE: float
-    ss_TE: float
-    s_max_t: float
-    ss_max_t: float
-    ss_join: float
+    ss_control_points: NDArray
+    original: Optional[Thickness] = None
 
-    def create_thickness_distribution(self, s: NDArray) -> NDArray:
-        """Create thickness distribution for given arc length distribution."""
-        s_stretch = self.stretch(s)
-        ss_fit = self.spline(s_stretch)
-        return shape_space.inverse(s, ss_fit, self.t_TE)
+    def get_thickness(self, s: Optional[NDArray] = None) -> Thickness:
+        """Get thickness distribution for given arc length or the original section."""
+        if s is None and self.original is not None:
+            s = self.original.s
+        elif s is None:
+            raise ValueError("Either provide arc length or use original section.")
 
-    def create_thickness(self, s: NDArray) -> Thickness:
-        """Create Thickness dataclass for given arc length distribution."""
-        t = self.create_thickness_distribution(s)
-        return Thickness(s, t)
+        # Apply stretch function to arc length.
+        s_stretch = self.stretch_func(s)
+        # Evaluate spline at stretched arc length.
+        ss = self.ss_spline(s_stretch)
+        # Convert shape space value back to thickness distribution.
+        t = shape_space.inverse(s, ss, self.params.measured.thickness_TE)
+        chord = self.original.chord if self.original else None
+        return Thickness(s, t, chord)
 
-    def create_section(self, camber_line, stream_line=None) -> Section:
-        """Create a Section with this thickness distribution."""
-        s = camber_line.param
-        thickness = self.create_thickness_distribution(s)
-        return Section(camber_line, thickness, stream_line)
+    def compare_shape_space(self, ax=None):
+        """Plot comparison of fitted spline and original shape space representation."""
+        if self.original is None:
+            raise ValueError("Original thickness must exist for comparison")
 
-    def plot_shape_space(self, original_sec: Section = None, ax=None):
-        """Plot the shape space representation with fit."""
         if ax is None:
             _, ax = plt.subplots()
 
-        # Plot the fitted spline
-        s_plot = np.linspace(self.s_LE, self.s_TE, 200)
-        ss_plot = self.spline(s_plot)
-        ax.plot(s_plot, ss_plot, "r-", label="Fitted spline", linewidth=2)
+        # Calculate shape space domain
+        s_LE = -self.params.fitted.stretch_amount
+        s_TE = 1.0
+        s_plot = np.linspace(s_LE, s_TE, 200)
 
-        # Plot original if provided
-        if original_sec is not None:
-            s_orig = original_sec.normalised_arc_length
-            t_orig = original_sec.thickness
-            # Calculate original shape space values for plotting
-            ss_orig = shape_space.value(s_orig, t_orig, t_orig[-1])
-            s_stretch_orig = self.stretch(s_orig)
-            ax.plot(s_stretch_orig, ss_orig, "k-", label="Original", alpha=0.7)
+        # Plot fitted spline
+        ss_fit = self.ss_spline(s_plot)
+        ax.plot(s_plot, ss_fit, "r-", linewidth=2, label="Fitted spline")
 
-        # Plot key points
-        ax.plot(self.s_LE, self.ss_LE, "ro", markersize=8, label="Leading edge")
-        ax.plot(self.s_TE, self.ss_TE, "ro", markersize=8, label="Trailing edge")
-        ax.plot(self.s_max_t, self.ss_max_t, "go", markersize=8, label="Max thickness")
+        # Plot control points
         ax.plot(
-            self.params.fitted.stretch_join,
-            self.ss_join,
+            self.ss_control_points[:, 0],
+            self.ss_control_points[:, 1],
             "bo",
             markersize=8,
-            label="Stretch join",
-        )
-
-        # Plot knots
-        degree = self.spline.k
-        n_coef = len(self.spline.c)
-        knot_avg = np.array(
-            [self.spline.t[i : i + degree + 1].mean() for i in range(n_coef)]
-        )
-        ax.plot(
-            knot_avg,
-            self.spline.c,
-            "bx",
-            markersize=10,
-            markeredgewidth=2,
             label="Control points",
         )
 
+        # Plot original shape space representation
+        s_orig = self.original.s
+        t_orig = self.original.t
+        ss_orig = shape_space.value(s_orig, t_orig, t_orig[-1])
+        s_stretch_orig = self.stretch_func(s_orig)
+        ax.plot(s_stretch_orig, ss_orig, "k-", alpha=0.7, linewidth=2, label="Original")
+
         ax.set_xlabel("Stretched arc length")
         ax.set_ylabel("Shape space value")
-        ax.set_title("Thickness Shape Space Representation")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        return ax
-
-    def plot_thickness_comparison(self, original_sec: Section, ax=None):
-        """Plot comparison between original section and fitted thickness."""
-        if ax is None:
-            _, ax = plt.subplots()
-
-        s_orig = original_sec.normalised_arc_length
-        t_orig = original_sec.thickness
-        t_fit = self.create_thickness_distribution(s_orig)
-
-        ax.plot(s_orig, t_orig, "k-", label="Original", linewidth=2)
-        ax.plot(s_orig, t_fit, "r--", label="Fitted", linewidth=2)
-
-        self._add_thickness_markers(ax)
-        self._format_thickness_plot(ax, "Thickness Distribution Comparison")
-        return ax
-
-    def plot_thickness_comparison_from_thickness(
-        self, original_thickness: Thickness, ax=None
-    ):
-        """Plot comparison between original and fitted thickness using Thickness object."""
-        if ax is None:
-            _, ax = plt.subplots()
-
-        original_thickness.plot(ax, "k-", label="Original", linewidth=2)
-        fitted_thickness = self.create_thickness(original_thickness.s)
-        fitted_thickness.plot(ax, "r--", label="Fitted", linewidth=2)
-
-        self._add_thickness_markers(ax)
-        self._format_thickness_plot(ax, "Thickness Distribution Comparison")
-        return ax
-
-    def _add_thickness_markers(self, ax):
-        """Add key markers to thickness plots."""
-        ax.axvline(
-            self.params.measured.s_max_t,
-            color="g",
-            linestyle=":",
-            alpha=0.7,
-            label="Max thickness",
-        )
-        ax.axvline(
-            self.params.fitted.stretch_join,
-            color="b",
-            linestyle=":",
-            alpha=0.7,
-            label="Stretch join",
-        )
-
-    def _format_thickness_plot(self, ax, title: str):
-        """Format thickness plot with labels and styling."""
-        ax.set_xlabel("Normalised arc length")
-        ax.set_ylabel("Thickness")
-        ax.set_title(title)
+        ax.set_title("Shape Space Comparison")
         ax.legend()
         ax.grid(True, alpha=0.3)
 
-    def plot_section_comparison(self, original_sec: Section, ax=None):
-        """Plot comparison between original and fitted blade sections."""
-        if ax is None:
-            _, ax = plt.subplots()
-
-        # Plot original section
-        plot_plane_curve(original_sec.upper_and_lower(), ax, "k-", label="Original")
-
-        # Create and plot fitted section
-        fitted_sec = self.create_section(
-            original_sec.camber_line, original_sec.stream_line
-        )
-        plot_plane_curve(fitted_sec.upper_and_lower(), ax, "r--", label="Fitted")
-
-        ax.set_title("Blade Section Comparison")
-        ax.legend()
-        ax.axis("equal")
-        ax.grid(True, alpha=0.3)
         return ax
 
-    def plot_fit_summary(self, original_sec: Section):
-        """Create a comprehensive summary plot of the thickness fit."""
-        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 10))
+    # def create_thickness_distribution(self, s: NDArray) -> NDArray:
+    #     """Create thickness distribution for given arc length distribution."""
+    #     s_stretch = self.stretch_func(s)
+    #     ss_fit = self.ss_spline(s_stretch)
+    #     return shape_space.inverse(s, ss_fit, self.t_TE)
 
-        self.plot_shape_space(original_sec, ax1)
-        self.plot_thickness_comparison(original_sec, ax2)
-        self.plot_section_comparison(original_sec, ax3)
+    # def create_thickness(self, s: NDArray) -> Thickness:
+    #     """Create Thickness dataclass for given arc length distribution."""
+    #     t = self.create_thickness_distribution(s)
+    #     return Thickness(s, t)
 
-        # Plot LE circle fit
-        le_circle = fit_LE_circle(original_sec)
-        self.plot_section_comparison(original_sec, ax4)
-        le_circle.plot(ax4)
-        ax4.set_title(f"Leading Edge Circle (R={le_circle.radius:.4f})")
+    # def create_section(self, camber_line, stream_line=None) -> Section:
+    #     """Create a Section with this thickness distribution."""
+    #     s = camber_line.param
+    #     thickness = self.create_thickness_distribution(s)
+    #     return Section(camber_line, thickness, stream_line)
 
-        plt.tight_layout()
-        plt.show()
-        return fig
+    # def plot_shape_space(self, original_sec: Section = None, ax=None):
+    #     """Plot the shape space representation with fit."""
+    #     if ax is None:
+    #         _, ax = plt.subplots()
+
+    #     # Plot the fitted spline
+    #     s_plot = np.linspace(self.s_LE, self.s_TE, 200)
+    #     ss_plot = self.ss_spline(s_plot)
+    #     ax.plot(s_plot, ss_plot, "r-", label="Fitted spline", linewidth=2)
+
+    #     # Plot original if provided
+    #     if original_sec is not None:
+    #         s_orig = original_sec.normalised_arc_length
+    #         t_orig = original_sec.thickness
+    #         # Calculate original shape space values for plotting
+    #         ss_orig = shape_space.value(s_orig, t_orig, t_orig[-1])
+    #         s_stretch_orig = self.stretch_func(s_orig)
+    #         ax.plot(s_stretch_orig, ss_orig, "k-", label="Original", alpha=0.7)
+
+    #     # Plot key points
+    #     ax.plot(self.s_LE, self.ss_LE, "ro", markersize=8, label="Leading edge")
+    #     ax.plot(self.s_TE, self.ss_TE, "ro", markersize=8, label="Trailing edge")
+    #     ax.plot(self.s_max_t, self.ss_max_t, "go", markersize=8, label="Max thickness")
+    #     ax.plot(
+    #         self.params.fitted.stretch_join,
+    #         self.ss_join,
+    #         "bo",
+    #         markersize=8,
+    #         label="Stretch join",
+    #     )
+
+    #     # Plot knots
+    #     degree = self.ss_spline.k
+    #     n_coef = len(self.ss_spline.c)
+    #     knot_avg = np.array(
+    #         [self.ss_spline.t[i : i + degree + 1].mean() for i in range(n_coef)]
+    #     )
+    #     ax.plot(
+    #         knot_avg,
+    #         self.ss_spline.c,
+    #         "bx",
+    #         markersize=10,
+    #         markeredgewidth=2,
+    #         label="Control points",
+    #     )
+
+    #     ax.set_xlabel("Stretched arc length")
+    #     ax.set_ylabel("Shape space value")
+    #     ax.set_title("Thickness Shape Space Representation")
+    #     ax.legend()
+    #     ax.grid(True, alpha=0.3)
+    #     return ax
+
+    # def plot_thickness_comparison(self, original_sec: Section, ax=None):
+    #     """Plot comparison between original section and fitted thickness."""
+    #     if ax is None:
+    #         _, ax = plt.subplots()
+
+    #     s_orig = original_sec.normalised_arc_length
+    #     t_orig = original_sec.thickness
+    #     t_fit = self.create_thickness_distribution(s_orig)
+
+    #     ax.plot(s_orig, t_orig, "k-", label="Original", linewidth=2)
+    #     ax.plot(s_orig, t_fit, "r--", label="Fitted", linewidth=2)
+
+    #     self._add_thickness_markers(ax)
+    #     self._format_thickness_plot(ax, "Thickness Distribution Comparison")
+    #     return ax
+
+    # def plot_thickness_comparison_from_thickness(
+    #     self, original_thickness: Thickness, ax=None
+    # ):
+    #     """Plot comparison between original and fitted thickness using Thickness object."""
+    #     if ax is None:
+    #         _, ax = plt.subplots()
+
+    #     original_thickness.plot(ax, "k-", label="Original", linewidth=2)
+    #     fitted_thickness = self.create_thickness(original_thickness.s)
+    #     fitted_thickness.plot(ax, "r--", label="Fitted", linewidth=2)
+
+    #     self._add_thickness_markers(ax)
+    #     self._format_thickness_plot(ax, "Thickness Distribution Comparison")
+    #     return ax
+
+    # def _add_thickness_markers(self, ax):
+    #     """Add key markers to thickness plots."""
+    #     ax.axvline(
+    #         self.params.measured.s_max_t,
+    #         color="g",
+    #         linestyle=":",
+    #         alpha=0.7,
+    #         label="Max thickness",
+    #     )
+    #     ax.axvline(
+    #         self.params.fitted.stretch_join,
+    #         color="b",
+    #         linestyle=":",
+    #         alpha=0.7,
+    #         label="Stretch join",
+    #     )
+
+    # def _format_thickness_plot(self, ax, title: str):
+    #     """Format thickness plot with labels and styling."""
+    #     ax.set_xlabel("Normalised arc length")
+    #     ax.set_ylabel("Thickness")
+    #     ax.set_title(title)
+    #     ax.legend()
+    #     ax.grid(True, alpha=0.3)
+
+    # def plot_section_comparison(self, original_sec: Section, ax=None):
+    #     """Plot comparison between original and fitted blade sections."""
+    #     if ax is None:
+    #         _, ax = plt.subplots()
+
+    #     # Plot original section
+    #     plot_plane_curve(original_sec.upper_and_lower(), ax, "k-", label="Original")
+
+    #     # Create and plot fitted section
+    #     fitted_sec = self.create_section(
+    #         original_sec.camber_line, original_sec.stream_line
+    #     )
+    #     plot_plane_curve(fitted_sec.upper_and_lower(), ax, "r--", label="Fitted")
+
+    #     ax.set_title("Blade Section Comparison")
+    #     ax.legend()
+    #     ax.axis("equal")
+    #     ax.grid(True, alpha=0.3)
+    #     return ax
+
+    # def plot_fit_summary(self, original_sec: Section):
+    #     """Create a comprehensive summary plot of the thickness fit."""
+    #     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 10))
+
+    #     self.plot_shape_space(original_sec, ax1)
+    #     self.plot_thickness_comparison(original_sec, ax2)
+    #     self.plot_section_comparison(original_sec, ax3)
+
+    #     # Plot LE circle fit
+    #     le_circle = fit_LE_circle(original_sec)
+    #     self.plot_section_comparison(original_sec, ax4)
+    #     le_circle.plot(ax4)
+    #     ax4.set_title(f"Leading Edge Circle (R={le_circle.radius:.4f})")
+
+    #     plt.tight_layout()
+    #     plt.show()
+    #     return fig
 
 
 def create_thickness(params: ThicknessParams) -> ThicknessResult:
@@ -548,24 +620,25 @@ def create_thickness(params: ThicknessParams) -> ThicknessResult:
     b = np.r_[*[c[1] for c in constraints]]
     coefs = np.linalg.solve(A, b)
 
-    spline = BSpline(knots, coefs, degree)
+    ss_spline = BSpline(knots, coefs, degree)
+    ss_control_points = np.array(
+        [
+            [s_LE, ss_LE],
+            [stretch_join, params.measured.ss_stretch_join],
+            [s_max_t, ss_max_t],
+            [s_TE, ss_TE],
+        ]
+    )
 
     return ThicknessResult(
-        spline=spline,
-        stretch=stretch,
+        ss_spline=ss_spline,
+        stretch_func=stretch,
         params=params,
-        t_TE=t_TE,
-        s_LE=s_LE,
-        ss_LE=ss_LE,
-        s_TE=s_TE,
-        ss_TE=ss_TE,
-        s_max_t=s_max_t,
-        ss_max_t=ss_max_t,
-        ss_join=params.measured.ss_stretch_join,
+        ss_control_points=ss_control_points,
     )
 
 
-def fit_thickness(sec: Section, plot_intermediate: bool = False) -> ThicknessResult:
+def fit_thickness(thickness: Thickness) -> ThicknessResult:
     """Fit thickness parameterisation to a blade section."""
 
     # Initial guess of fitting parameters.
@@ -573,7 +646,7 @@ def fit_thickness(sec: Section, plot_intermediate: bool = False) -> ThicknessRes
 
     # Function to calculate parameters from optimisation vector.
     def create_params(x) -> ThicknessParams:
-        measured = measure_thickness(sec, x[1])  # x[1] is stretch_join
+        measured = measure_thickness(thickness, x[1])  # x[1] is stretch_join
         return ThicknessParams(
             measured=measured,
             fitted=FittedThicknessParams(
@@ -590,19 +663,18 @@ def fit_thickness(sec: Section, plot_intermediate: bool = False) -> ThicknessRes
         return create_thickness(params)
 
     # Function to calculate error between fit and actual in shape space.
-    s_sec = sec.normalised_arc_length
-    t_sec = sec.thickness
+    s, t = thickness.s, thickness.t
     # Calculate original shape space values for comparison
-    ss = shape_space.value(s_sec, t_sec, t_sec[-1])
+    ss = shape_space.value(s, t, t[-1])
 
     def err(x):
         res = create(x)
-        s_stretch = res.stretch(s_sec)
-        ss_fit = res.spline(s_stretch)
-        return np.trapezoid((ss - ss_fit) ** 2, s_sec)
+        s_stretch = res.stretch_func(s)
+        ss_fit = res.ss_spline(s_stretch)
+        return np.trapezoid((ss - ss_fit) ** 2, s)
 
     # Create constraints with validation
-    constraints = _create_thickness_constraints()
+    constraints = _create_thickness_fitting_constraints()
     _validate_initial_guess(x0, constraints)
     e0 = err(x0)
     tol = 1e-4 * e0
@@ -612,14 +684,12 @@ def fit_thickness(sec: Section, plot_intermediate: bool = False) -> ThicknessRes
 
     x = opt.x
     result = create(x)
-
-    if plot_intermediate:
-        result.plot_fit_summary(sec)
+    result.original = thickness  # Store original thickness for reference
 
     return result
 
 
-def _create_thickness_constraints():
+def _create_thickness_fitting_constraints():
     """Create constraints for thickness fitting optimization."""
 
     def gt_zero(constraint_func):
