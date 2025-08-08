@@ -368,6 +368,51 @@ def _find_continuous_segments(mask, min_length=10):
     return segments
 
 
+################################################################################
+###################### Initial guess of camber and thickness ###################
+################################################################################
+
+
+def _initial_guess(
+    upper_curve: PlaneCurve, lower_curve: PlaneCurve
+) -> tuple[Camber, Thickness]:
+    """
+    Create initial guesses for camber and thickness based on upper and lower curves.
+
+    Parameters
+    ----------
+    upper_curve : PlaneCurve
+        The upper surface curve of the airfoil.
+    lower_curve : PlaneCurve
+        The lower surface curve of the airfoil.
+
+    Returns
+    -------
+    tuple[Camber, Thickness]
+        A tuple containing the initial camber and thickness objects.
+    """
+    # Ensure both curves have normalised arc length parameterisation
+    upper_curve = upper_curve.reparameterise_unit().normalise()
+    lower_curve = lower_curve.reparameterise_unit().normalise()
+
+    # Interpolate the upper and lower curves to have equal number of points
+    # using the spacing from the curve with more points
+    if len(upper_curve.param) > len(lower_curve.param):
+        lower_curve = lower_curve.interpolate(upper_curve.param, k=2)
+    else:
+        upper_curve = upper_curve.interpolate(lower_curve.param, k=2)
+
+    # Camber is the average the coordinates of upper and lower curves
+    camber_coords = (upper_curve.coords + lower_curve.coords) / 2
+    camber = Camber(PlaneCurve.new_unit_speed(camber_coords))
+
+    # Thickness is the distance between upper and lower curves
+    thickness_values = np.linalg.norm(upper_curve.coords - lower_curve.coords, axis=1)
+    thickness = Thickness(upper_curve.param, thickness_values, None)
+
+    return camber, thickness
+
+
 ################# Extend camber line to LE and TE #################
 
 
@@ -471,9 +516,12 @@ class CamberProgress:
 
 @dataclass
 class ApproximateCamberResult:
-    section: Section | None
-    split_result: SplitSectionResult
+    section: Section | None  # Set if the approximation was successful
     success: bool
+    section_perimiter: SectionPerimiter
+    split_result: SplitSectionResult
+    initial_camber: Camber | None  # Set if the split was successful
+    initial_thickness: Thickness | None  # Set if the split was successful
     iterations: int
     final_delta: float
     convergence_history: list[float]
@@ -483,6 +531,113 @@ class ApproximateCamberResult:
         if not self.success or self.section is None:
             raise CamberApproximationError(self.error_message)
         return self.section
+
+    def plot_split_summary(self):
+        return self.split_result.plot_summary()
+
+    def plot_initial_camber(self, show_closeups=True):
+        """
+        Plot the initial camber line with optional close-up views of leading and trailing edges
+
+        Parameters
+        ----------
+        show_closeups : bool, optional
+            Whether to show close-up views of leading and trailing edges. Default is True.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The main axes object containing the initial camber plot.
+        """
+        if self.initial_camber is None:
+            raise ValueError("Initial camber must be set for plotting.")
+
+        assert (
+            self.split_result.upper_curve is not None
+        ), "Expected upper curve to be valid"
+        assert (
+            self.split_result.lower_curve is not None
+        ), "Expected lower curve to be valid"
+        assert (
+            self.initial_thickness is not None
+        ), "Expected initial thickness to be valid"
+
+        if show_closeups:
+            fig = plt.figure(figsize=(12, 6))
+            # Create main axis on the left (70% width)
+            ax = fig.add_subplot(1, 3, (1, 2))
+
+            # Create two smaller axes on the right (50% height each)
+            ax_le = fig.add_subplot(2, 3, 3)  # Leading edge (top right)
+            ax_te = fig.add_subplot(2, 3, 6)  # Trailing edge (bottom right)
+        else:
+            fig, ax = plt.subplots(figsize=(8, 6))
+            ax_le = None
+            ax_te = None
+
+        # Plot on main axis
+        self.section_perimiter.curve.plot(ax=ax, label="Section Curve", color="k")
+        self.split_result.upper_curve.plot(ax=ax, label="Upper Curve", color="r")
+        self.split_result.lower_curve.plot(ax=ax, label="Lower Curve", color="g")
+        self.initial_camber.line.plot(ax=ax, label="Initial Camber", color="b")
+
+        ax.set_title("Initial camber line")
+        ax.legend()
+        ax.axis("equal")
+
+        # Plot close-up views if requested
+        if show_closeups and (ax_le is not None) and (ax_te is not None):
+            # Get camber line points for determining leading and trailing edges
+            camber_coords = self.initial_camber.line.coords
+
+            # Leading edge is at the start of the camber line
+            le_x, le_y = camber_coords[0]
+            # Trailing edge is at the end of the camber line
+            te_x, te_y = camber_coords[-1]
+
+            # Define zoom window size based on local thickness
+            le_thickness = self.initial_thickness.t[0]  # Leading edge thickness
+            te_thickness = self.initial_thickness.t[-1]  # Trailing edge thickness
+            le_zoom_size = le_thickness
+            te_zoom_size = te_thickness
+
+            # Plot leading edge close-up
+            for curve, label, color in [
+                (self.section_perimiter.curve, "Section Curve", "k"),
+                (self.split_result.upper_curve, "Upper Curve", "r"),
+                (self.split_result.lower_curve, "Lower Curve", "g"),
+                (self.initial_camber.line, "Initial Camber", "b"),
+            ]:
+                curve.plot(ax=ax_le, color=color)
+
+            ax_le.set_title("Leading Edge")
+            ax_le.axis("equal")
+            ax_le.set_xlim(le_x - le_zoom_size, le_x + le_zoom_size)
+            ax_le.set_ylim(le_y - le_zoom_size, le_y + le_zoom_size)
+            ax_le.set_xticks([])
+            ax_le.set_yticks([])
+            ax_le.grid(True, alpha=0.3)
+
+            # Plot trailing edge close-up
+            for curve, label, color in [
+                (self.section_perimiter.curve, "Section Curve", "k"),
+                (self.split_result.upper_curve, "Upper Curve", "r"),
+                (self.split_result.lower_curve, "Lower Curve", "g"),
+                (self.initial_camber.line, "Initial Camber", "b"),
+            ]:
+                curve.plot(ax=ax_te, color=color)
+
+            ax_te.set_title("Trailing Edge")
+            ax_te.axis("equal")
+            ax_te.set_xlim(te_x - te_zoom_size, te_x + te_zoom_size)
+            ax_te.set_ylim(te_y - te_zoom_size, te_y + te_zoom_size)
+            ax_te.set_xticks([])
+            ax_te.set_yticks([])
+            ax_te.grid(True, alpha=0.3)
+
+        fig.tight_layout()
+
+        return ax
 
 
 class ApproximateCamberCallback(Protocol):
@@ -513,56 +668,79 @@ def approximate_camber(
         return ApproximateCamberResult(
             section=None,
             split_result=split_result,
+            initial_camber=None,
+            initial_thickness=None,
             success=False,
             iterations=0,
             final_delta=0.0,
             convergence_history=[],
             error_message=split_result.error_message,
+            section_perimiter=section,
         )
 
     # Initialize camber and thickness
-    camber = initial_camber_guess(split_result.upper_curve, split_result.lower_curve)  # type: ignore
-    thickness = initial_thickness_guess(split_result.upper_curve, split_result.lower_curve)  # type: ignore
-
-    # Run iterative improvement
-    loop_result = _run_iteration_loop(
-        camber, thickness, section, approx_camber_config, callback
+    assert split_result.upper_curve is not None, "Expected upper curve to be valid"
+    assert split_result.lower_curve is not None, "Expected lower curve to be valid"
+    initial_camber, initial_thickness = _initial_guess(
+        split_result.upper_curve, split_result.lower_curve
     )
 
-    # Create final section if successful
-    new_section = None
-    error_message = loop_result.error_message
-
-    if loop_result.success:
-        new_section, section_error = _create_final_section_safe(
-            loop_result.camber, loop_result.thickness, section, approx_camber_config
-        )
-        if new_section is None:
-            loop_result.success = False
-            error_message = section_error
-        elif section_error:
-            error_message = section_error  # Warning message
-
-    # Final callback notification
-    if callback is not None:
-        final_progress = CamberProgress(
-            iteration=loop_result.iterations,
-            delta=loop_result.final_delta,
-            camber=loop_result.camber,
-            converged=loop_result.success,
-            error=error_message if not loop_result.success else None,
-        )
-        callback(final_progress)
-
+    # TESTING
     return ApproximateCamberResult(
-        section=new_section,
+        section=None,  # Set to None until we create the final section
         split_result=split_result,
-        success=loop_result.success,
-        iterations=loop_result.iterations,
-        final_delta=loop_result.final_delta,
-        convergence_history=loop_result.convergence_history,
-        error_message=error_message,
+        initial_camber=initial_camber,
+        initial_thickness=initial_thickness,
+        success=False,  # Set to False until we run the iteration loop
+        iterations=0,
+        final_delta=0.0,
+        convergence_history=[],
+        error_message="",
+        section_perimiter=section,
     )
+
+    # # Run iterative improvement
+    # loop_result = _run_iteration_loop(
+    #     initial_camber, initial_thickness, section, approx_camber_config, callback
+    # )
+
+    # # Create final section if successful
+    # new_section = None
+    # error_message = loop_result.error_message
+
+    # if loop_result.success:
+    #     new_section, section_error = _create_final_section_safe(
+    #         loop_result.camber, loop_result.thickness, section, approx_camber_config
+    #     )
+    #     if new_section is None:
+    #         loop_result.success = False
+    #         error_message = section_error
+    #     elif section_error:
+    #         error_message = section_error  # Warning message
+
+    # # Final callback notification
+    # if callback is not None:
+    #     final_progress = CamberProgress(
+    #         iteration=loop_result.iterations,
+    #         delta=loop_result.final_delta,
+    #         camber=loop_result.camber,
+    #         converged=loop_result.success,
+    #         error=error_message if not loop_result.success else None,
+    #     )
+    #     callback(final_progress)
+
+    # return ApproximateCamberResult(
+    #     section=new_section,
+    #     split_result=split_result,
+    #     initial_camber=initial_camber,
+    #     initial_thickness=initial_thickness,
+    #     success=loop_result.success,
+    #     iterations=loop_result.iterations,
+    #     final_delta=loop_result.final_delta,
+    #     convergence_history=loop_result.convergence_history,
+    #     error_message=error_message,
+    #     section_perimiter=section,
+    # )
 
 
 @dataclass
@@ -696,48 +874,6 @@ def _create_final_section_safe(
 
     except Exception as e:
         return None, f"Unexpected error in final section creation: {str(e)}"
-
-
-################################################################################
-###################### Initial guess of camber and thickness ###################
-################################################################################
-
-
-def initial_thickness_guess(
-    upper_curve: PlaneCurve, lower_curve: PlaneCurve
-) -> Thickness:
-    """Calculate initial thickness as distance between upper and lower curves."""
-    upper_curve = upper_curve.reparameterise_unit().normalise()
-    lower_curve = lower_curve.reparameterise_unit().normalise()
-
-    if len(upper_curve.param) > len(lower_curve.param):
-        lower_curve = lower_curve.interpolate(upper_curve.param, k=2)
-    else:
-        upper_curve = upper_curve.interpolate(lower_curve.param, k=2)
-
-    thickness_values = np.linalg.norm(upper_curve.coords - lower_curve.coords, axis=1)
-    return Thickness(upper_curve.param, thickness_values, None)
-
-
-def initial_camber_guess(upper_curve: PlaneCurve, lower_curve: PlaneCurve) -> Camber:
-    """
-    Create an initial guess for the camber line as the average of upper and lower curves.
-    """
-
-    # Ensure both curves have normalised arc length parameterisation
-    upper_curve = upper_curve.reparameterise_unit().normalise()
-    lower_curve = lower_curve.reparameterise_unit().normalise()
-
-    # Interpolate the upper and lower curves to have equal number of points
-    # using the spacing from the curve with more points
-    if len(upper_curve.param) > len(lower_curve.param):
-        lower_curve = lower_curve.interpolate(upper_curve.param, k=2)
-    else:
-        upper_curve = upper_curve.interpolate(lower_curve.param, k=2)
-
-    # Average the coordinates of upper and lower curves
-    camber_coords = (upper_curve.coords + lower_curve.coords) / 2
-    return Camber(PlaneCurve.new_unit_speed(camber_coords))
 
 
 def improve_camber_robust(
