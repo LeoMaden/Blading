@@ -12,6 +12,86 @@ from .thickness import Thickness
 from scipy.signal import find_peaks
 
 
+def plot_zoomed_view(
+    ax,
+    plot_functions,
+    camber_line,
+    zoom_type="LE",
+    title=None,
+    chord_fraction=0.02,
+    bias=0.5,
+):
+    """
+    Plot a zoomed-in view of leading or trailing edge on a given axis.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes object to plot on.
+    plot_functions : list of callable
+        List of functions to call for plotting. Each function should accept an ax parameter.
+    camber_line : PlaneCurve
+        Camber line used to determine LE and TE positions for close-up views.
+    zoom_type : str, optional
+        Type of zoom view: "LE" for leading edge or "TE" for trailing edge. Default is "LE".
+    title : str, optional
+        Title for the zoom view. If None, uses "Leading Edge" or "Trailing Edge".
+    chord_fraction : float, optional
+        Fraction of the chord length to use as the zoom window size. Default is 0.02.
+    bias : float, optional
+        Bias factor for positioning zoom windows. Default is 0.5.
+
+    Returns
+    -------
+    matplotlib.axes.Axes
+        The axes object that was plotted on.
+    """
+    # Get camber line points for determining leading and trailing edges
+    camber_coords = camber_line.coords
+    
+    if zoom_type.upper() == "LE":
+        # Leading edge is at the start of the camber line
+        center_x, center_y = camber_coords[0]
+        default_title = "Leading Edge"
+    elif zoom_type.upper() == "TE":
+        # Trailing edge is at the end of the camber line
+        center_x, center_y = camber_coords[-1]
+        default_title = "Trailing Edge"
+    else:
+        raise ValueError(f"Invalid zoom_type '{zoom_type}'. Must be 'LE' or 'TE'.")
+    
+    # Calculate chord length and zoom window size
+    chord_length = camber_line.length()
+    zoom_size = chord_length * chord_fraction
+    
+    # Calculate bias offsets for directional positioning
+    bias_offset = zoom_size * bias
+    
+    # Plot all functions on the axis
+    for plot_func in plot_functions:
+        plot_func(ax)
+    
+    # Set title
+    ax.set_title(title if title is not None else default_title)
+    ax.axis("equal")
+    
+    # Set zoom limits based on type
+    if zoom_type.upper() == "LE":
+        # Bias LE towards lower-left: move left (reduce x) and down (reduce y)
+        ax.set_xlim(center_x - zoom_size + bias_offset, center_x + zoom_size + bias_offset)
+        ax.set_ylim(center_y - zoom_size + bias_offset, center_y + zoom_size + bias_offset)
+    else:  # TE
+        # Bias TE towards upper-right: move right (increase x) and up (increase y)
+        ax.set_xlim(center_x - zoom_size - bias_offset, center_x + zoom_size - bias_offset)
+        ax.set_ylim(center_y - zoom_size - bias_offset, center_y + zoom_size - bias_offset)
+    
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.grid(True, alpha=0.3)
+    
+    return ax
+
+
 def create_multi_view_plot(
     plot_functions,
     camber_line,
@@ -77,46 +157,24 @@ def create_multi_view_plot(
 
     # Plot close-up views if requested
     if show_closeups and ax_le is not None and ax_te is not None:
-        # Get camber line points for determining leading and trailing edges
-        camber_coords = camber_line.coords
-
-        # Leading edge is at the start of the camber line
-        le_x, le_y = camber_coords[0]
-        # Trailing edge is at the end of the camber line
-        te_x, te_y = camber_coords[-1]
-
-        # Calculate chord length and zoom window size
-        chord_length = camber_line.length()
-        zoom_size = chord_length * chord_fraction
-
-        # Calculate bias offsets for directional positioning
-        bias_offset = zoom_size * bias
-
-        # Plot leading edge close-up
-        for plot_func in plot_functions:
-            plot_func(ax_le)
-
-        ax_le.set_title("Leading Edge")
-        ax_le.axis("equal")
-        # Bias LE towards lower-left: move left (reduce x) and down (reduce y)
-        ax_le.set_xlim(le_x - zoom_size + bias_offset, le_x + zoom_size + bias_offset)
-        ax_le.set_ylim(le_y - zoom_size + bias_offset, le_y + zoom_size + bias_offset)
-        ax_le.set_xticks([])
-        ax_le.set_yticks([])
-        ax_le.grid(True, alpha=0.3)
-
-        # Plot trailing edge close-up
-        for plot_func in plot_functions:
-            plot_func(ax_te)
-
-        ax_te.set_title("Trailing Edge")
-        ax_te.axis("equal")
-        # Bias TE towards upper-right: move right (increase x) and up (increase y)
-        ax_te.set_xlim(te_x - zoom_size - bias_offset, te_x + zoom_size - bias_offset)
-        ax_te.set_ylim(te_y - zoom_size - bias_offset, te_y + zoom_size - bias_offset)
-        ax_te.set_xticks([])
-        ax_te.set_yticks([])
-        ax_te.grid(True, alpha=0.3)
+        # Use the extracted zoomed view function for both LE and TE
+        plot_zoomed_view(
+            ax_le, 
+            plot_functions, 
+            camber_line, 
+            zoom_type="LE",
+            chord_fraction=chord_fraction,
+            bias=bias
+        )
+        
+        plot_zoomed_view(
+            ax_te, 
+            plot_functions, 
+            camber_line, 
+            zoom_type="TE",
+            chord_fraction=chord_fraction,
+            bias=bias
+        )
 
         fig.tight_layout()
         return fig, ax_main, ax_le, ax_te
@@ -778,24 +836,8 @@ class CamberIterationResult:
     success: bool = False
     error_message: str = ""
 
-    def plot(self, show_closeups=True):
-        """
-        Plot the camber line, section, and target connections using multi-view layout.
-
-        If success is True, also plots the new camber line.
-        Shows lines connecting corresponding points on upper and lower targets.
-
-        Parameters
-        ----------
-        show_closeups : bool, optional
-            Whether to show LE/TE closeup views.
-
-        Returns
-        -------
-        matplotlib.figure.Figure
-            The figure returned by create_multi_view_plot.
-        """
-        # Use create_multi_view_plot for multi-panel layout
+    def _get_plot_functions(self):
+        """Get the plot functions for this iteration result."""
         plot_functions = [
             lambda ax: self.section.curve.plot(
                 ax=ax, label="Section", color="k", linestyle="-", alpha=0.7
@@ -877,7 +919,18 @@ class CamberIterationResult:
                 ]
             )
 
-        # Set title based on success status
+        return plot_functions
+
+    def _get_camber_line_for_zoom(self):
+        """Get the appropriate camber line for zoom reference."""
+        return (
+            self.new_camber.line
+            if (self.success and self.new_camber)
+            else self.prev_camber.line
+        )
+
+    def _get_plot_title(self):
+        """Get the plot title based on success status."""
         if self.success:
             title = f"Camber Iteration Result (Success - δ={self.delta:.2e})"
             if self.extend_result is not None:
@@ -887,13 +940,66 @@ class CamberIterationResult:
                 title += f" - {extend_status}"
         else:
             title = f"Camber Iteration Result (Failed - {self.error_message})"
+        return title
 
-        # Use the new camber line for zoom reference, fall back to previous camber
-        camber_line = (
-            self.new_camber.line
-            if (self.success and self.new_camber)
-            else self.prev_camber.line
+    def plot_zoomed(self, ax=None, zoom_type="LE", chord_fraction=0.02, bias=0.5, title=None):
+        """
+        Plot a zoomed-in view of leading or trailing edge on the provided or new axis.
+
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes, optional
+            Axes object to plot on. If None, creates new figure and axes.
+        zoom_type : str, optional
+            Type of zoom view: "LE" for leading edge or "TE" for trailing edge. Default is "LE".
+        chord_fraction : float, optional
+            Fraction of the chord length to use as the zoom window size. Default is 0.02.
+        bias : float, optional
+            Bias factor for positioning zoom windows. Default is 0.5.
+        title : str, optional
+            Title for the zoom view. If None, uses default based on zoom_type.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The axes object that was plotted on.
+        """
+        if ax is None:
+            fig, ax = plt.subplots()
+        
+        plot_functions = self._get_plot_functions()
+        camber_line = self._get_camber_line_for_zoom()
+        
+        return plot_zoomed_view(
+            ax=ax,
+            plot_functions=plot_functions,
+            camber_line=camber_line,
+            zoom_type=zoom_type,
+            title=title,
+            chord_fraction=chord_fraction,
+            bias=bias,
         )
+
+    def plot(self, show_closeups=True):
+        """
+        Plot the camber line, section, and target connections using multi-view layout.
+
+        If success is True, also plots the new camber line.
+        Shows lines connecting corresponding points on upper and lower targets.
+
+        Parameters
+        ----------
+        show_closeups : bool, optional
+            Whether to show LE/TE closeup views.
+
+        Returns
+        -------
+        matplotlib.figure.Figure
+            The figure returned by create_multi_view_plot.
+        """
+        plot_functions = self._get_plot_functions()
+        camber_line = self._get_camber_line_for_zoom()
+        title = self._get_plot_title()
 
         return create_multi_view_plot(
             plot_functions=plot_functions,
