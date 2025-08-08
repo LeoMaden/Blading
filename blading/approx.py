@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from .camber import Camber
 from .section import Section
 from .section_perimiter import SectionPerimiter
+from .thickness import Thickness
 from scipy.signal import find_peaks
 
 
@@ -16,7 +17,7 @@ from scipy.signal import find_peaks
 
 @dataclass
 class SplitConfig:
-    curvature_threshold_factor: float = 5
+    curvature_threshold_factor: float = 0.2
     curvature_prominence_factor: float = 0.1
     min_segment_length: int = 10
 
@@ -312,7 +313,7 @@ class CamberApproximationError(Exception):
 class IterationLoopResult:
     success: bool
     camber: Camber
-    thickness: NDArray
+    thickness: Thickness
     final_delta: float
     iterations: int
     convergence_history: list[float]
@@ -321,7 +322,7 @@ class IterationLoopResult:
 
 def _run_iteration_loop(
     camber: Camber,
-    thickness: NDArray,
+    thickness: Thickness,
     section: SectionPerimiter,
     config: ApproximateCamberConfig,
     callback: ApproximateCamberCallback | None,
@@ -403,7 +404,7 @@ def _run_iteration_loop(
 
 def _create_final_section_safe(
     camber: Camber,
-    thickness: NDArray,
+    thickness: Thickness,
     section: SectionPerimiter,
     config: ApproximateCamberConfig,
 ) -> tuple[Section | None, str]:
@@ -500,7 +501,7 @@ def approximate_camber(
 @dataclass
 class CamberIterationResult:
     camber: Camber
-    thickness: NDArray
+    thickness: Thickness
     delta: float
     success: bool
     error_message: str = ""
@@ -508,7 +509,7 @@ class CamberIterationResult:
 
 def initial_thickness_guess(
     upper_curve: PlaneCurve, lower_curve: PlaneCurve
-) -> NDArray:
+) -> Thickness:
     """Calculate initial thickness as distance between upper and lower curves."""
     upper_curve = upper_curve.reparameterise_unit().normalise()
     lower_curve = lower_curve.reparameterise_unit().normalise()
@@ -518,19 +519,19 @@ def initial_thickness_guess(
     else:
         upper_curve = upper_curve.interpolate(lower_curve.param, k=2)
 
-    thickness = np.linalg.norm(upper_curve.coords - lower_curve.coords, axis=1)
-    return thickness
+    thickness_values = np.linalg.norm(upper_curve.coords - lower_curve.coords, axis=1)
+    return Thickness(upper_curve.param, thickness_values)
 
 
 def improve_camber_robust(
     camber: Camber,
-    thickness: NDArray,
+    thickness: Thickness,
     section: SectionPerimiter,
     config: ApproximateCamberConfig,
 ) -> CamberIterationResult:
     """Robust version of camber improvement with proper error handling."""
     try:
-        N = len(thickness)
+        N = len(thickness.t)
         upper_coords = np.zeros((N, 2))
         lower_coords = np.zeros((N, 2))
 
@@ -539,8 +540,8 @@ def improve_camber_robust(
         successful_intersections = 0
         for i in range(N):
             c = camber.line.coords[i]
-            u = c + config.thickness_scale * thickness[i] * normal.coords[i]
-            l = c - config.thickness_scale * thickness[i] * normal.coords[i]
+            u = c + config.thickness_scale * thickness.t[i] * normal.coords[i]
+            l = c - config.thickness_scale * thickness.t[i] * normal.coords[i]
 
             # Try to find intersections with error handling
             int_u = section.curve.intersect_coords(np.c_[c, u].T)
@@ -568,10 +569,10 @@ def improve_camber_robust(
             else:
                 # No intersection found - keep previous position
                 upper_coords[i] = (
-                    camber.line.coords[i] + thickness[i] * normal.coords[i]
+                    camber.line.coords[i] + thickness.t[i] * normal.coords[i]
                 )
                 lower_coords[i] = (
-                    camber.line.coords[i] - thickness[i] * normal.coords[i]
+                    camber.line.coords[i] - thickness.t[i] * normal.coords[i]
                 )
 
         if successful_intersections < N * 0.8:  # Less than 80% success rate
@@ -586,7 +587,8 @@ def improve_camber_robust(
         # Create new camber line
         camber_coords = (upper_coords + lower_coords) / 2
         new_camber = Camber(PlaneCurve.new_unit_speed(camber_coords))
-        new_thickness = np.linalg.norm(upper_coords - lower_coords, axis=1)
+        new_thickness_values = np.linalg.norm(upper_coords - lower_coords, axis=1)
+        new_thickness = Thickness(thickness.s, new_thickness_values)
 
         # Apply relaxation
         delta_coords = (
@@ -620,7 +622,7 @@ class FinalSectionResult:
 
 def create_final_section(
     extended_camber: Camber,
-    thickness: NDArray,
+    thickness: Thickness,
     section: SectionPerimiter,
     config: ApproximateCamberConfig,
 ) -> FinalSectionResult:
@@ -656,17 +658,17 @@ def create_final_section(
         refined_camber = camber_line.interpolate(t_new, k=2)
 
         # Extend thickness array to match new parameterization
-        if len(thickness) == 0:
+        if len(thickness.t) == 0:
             return FinalSectionResult(
                 section=None,
                 success=False,
                 error_message="Empty thickness array provided",
             )
 
-        extended_thickness = np.r_[
-            np.repeat(thickness[0], config.num_points_le),
-            thickness[1:-1] if len(thickness) > 2 else [thickness[0]],
-            np.repeat(thickness[-1], config.num_points_te),
+        extended_thickness_values = np.r_[
+            np.repeat(thickness.t[0], config.num_points_le),
+            thickness.t[1:-1] if len(thickness.t) > 2 else [thickness.t[0]],
+            np.repeat(thickness.t[-1], config.num_points_te),
         ]
 
         # Re-calculate thicknesses with robust error handling
@@ -678,27 +680,36 @@ def create_final_section(
             )
 
         camber_no_ends = Camber(refined_camber[1:-1])
+        extended_thickness_no_ends = Thickness(
+            t_new[1:-1], extended_thickness_values[1:-1]
+        )
         iter_result = improve_camber_robust(
-            camber_no_ends, extended_thickness[1:-1], section, config
+            camber_no_ends, extended_thickness_no_ends, section, config
         )
 
         if not iter_result.success:
             # Fallback: use original thickness distribution
-            final_thickness = np.r_[0, extended_thickness[1:-1], 0]
+            final_thickness_values = np.r_[0, extended_thickness_values[1:-1], 0]
+            final_thickness = Thickness(t_new, final_thickness_values)
             return FinalSectionResult(
                 section=Section(
-                    Camber(refined_camber), final_thickness, section.stream_line
+                    thickness=final_thickness,
+                    camber=Camber(refined_camber),
+                    stream_line=section.stream_line,
                 ),
-                success=True,
+                success=False,
                 error_message=f"Warning: Used fallback thickness due to: {iter_result.error_message}",
             )
 
         # Success case: use recalculated thickness
-        final_thickness = np.r_[0, iter_result.thickness, 0]
+        final_thickness_values = np.r_[0, iter_result.thickness.t, 0]
+        final_thickness = Thickness(t_new, final_thickness_values)
 
         return FinalSectionResult(
             section=Section(
-                Camber(refined_camber), final_thickness, section.stream_line
+                thickness=final_thickness,
+                camber=Camber(refined_camber),
+                stream_line=section.stream_line,
             ),
             success=True,
         )
