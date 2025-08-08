@@ -4,7 +4,7 @@ from geometry.curves import plot_plane_curve
 from numpy.typing import NDArray
 import numpy as np
 from geometry.curves import PlaneCurve
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from .camber import Camber
 from .section import Section
 from .section_perimiter import SectionPerimiter
@@ -375,7 +375,7 @@ def _find_continuous_segments(mask, min_length=10):
 
 def _initial_guess(
     upper_curve: PlaneCurve, lower_curve: PlaneCurve
-) -> tuple[Camber, Thickness]:
+) -> tuple[PlaneCurve, NDArray]:
     """
     Create initial guesses for camber and thickness based on upper and lower curves.
 
@@ -388,8 +388,8 @@ def _initial_guess(
 
     Returns
     -------
-    tuple[Camber, Thickness]
-        A tuple containing the initial camber and thickness objects.
+    tuple[NDArray, NDArray]
+        A tuple containing the initial camber line and thickness values.
     """
     # Ensure both curves have normalised arc length parameterisation
     upper_curve = upper_curve.reparameterise_unit().normalise()
@@ -404,62 +404,129 @@ def _initial_guess(
 
     # Camber is the average the coordinates of upper and lower curves
     camber_coords = (upper_curve.coords + lower_curve.coords) / 2
-    camber = Camber(PlaneCurve.new_unit_speed(camber_coords))
+    camber_line = PlaneCurve.new_unit_speed(camber_coords)
 
     # Thickness is the distance between upper and lower curves
     thickness_values = np.linalg.norm(upper_curve.coords - lower_curve.coords, axis=1)
-    thickness = Thickness(upper_curve.param, thickness_values, None)
 
-    return camber, thickness
+    return camber_line, thickness_values
 
 
-################# Extend camber line to LE and TE #################
+################################################################################
+##################### Extend camber line to LE and TE ##########################
+################################################################################
+
+
+class ExtendCamberError(Exception):
+    """Custom exception for errors during camber line extension."""
+
+    pass
 
 
 @dataclass
 class ExtendCamberResult:
-    extended_camber: Camber | None
+    original_line: PlaneCurve
+    extended_line: PlaneCurve | None
     success: bool
-    original_camber: Camber
     section: SectionPerimiter
     LE_line: NDArray
     TE_line: NDArray
     error_message: str = ""
 
+    def unwrap(self) -> PlaneCurve:
+        """
+        Unwrap the extended camber line if successful.
+
+        Raises an exception if the extension was not successful.
+        """
+        if not self.success or self.extended_line is None:
+            raise ExtendCamberError(self.error_message)
+        return self.extended_line
+
     def plot(self, ax=None):
+        """
+        Plot the camber extension result showing original line, section, and extension lines.
+
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes, optional
+            Axes object to plot on. If None, creates new figure and axes.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The axes object containing the plot.
+        """
         if ax is None:
-            fig, ax = plt.subplots()
+            fig, ax = plt.subplots(figsize=(10, 6))
 
-        self.original_camber.line.plot(ax=ax, label="Original Camber", color="b")
-        self.section.curve.plot(ax=ax, label="Section Curve", color="k")
-        ax.plot(self.LE_line[:, 0], self.LE_line[:, 1], "r--", label="LE Line")
-        ax.plot(self.TE_line[:, 0], self.TE_line[:, 1], "g--", label="TE Line")
+        # Plot original camber line
+        self.original_line.plot(ax=ax, label="Original Camber", color="b", linewidth=2)
 
-        if self.extended_camber:
-            self.extended_camber.line.plot(
-                ax=ax, label="Extended Camber", color="m", linestyle="--"
+        # Plot section curve
+        self.section.curve.plot(ax=ax, label="Section Curve", color="k", alpha=0.8)
+
+        # Plot extension lines
+        ax.plot(
+            self.LE_line[:, 0],
+            self.LE_line[:, 1],
+            "r:",
+            label="LE Extension Line",
+            alpha=0.8,
+        )
+        ax.plot(
+            self.TE_line[:, 0],
+            self.TE_line[:, 1],
+            "g:",
+            label="TE Extension Line",
+            alpha=0.8,
+        )
+
+        # Plot extended camber if successful
+        if self.success and self.extended_line is not None:
+            self.extended_line.plot(
+                ax=ax,
+                label="Extended Camber",
+                color="m",
+                linestyle="--",
+                alpha=0.9,
             )
-            plt.plot(*self.extended_camber.line.start(), "mo")
-            plt.plot(*self.extended_camber.line.end(), "mo")
+            # Mark the new endpoints
+            ax.plot(
+                *self.extended_line.start(),
+                "co",
+                markeredgecolor="k",
+                label="New LE Point",
+            )
+            ax.plot(
+                *self.extended_line.end(),
+                "cs",
+                markeredgecolor="k",
+                label="New TE Point",
+            )
+            ax.set_title("Camber Extension Result (Success)")
+        else:
+            ax.set_title(f"Camber Extension Result (Failed - {self.error_message})")
 
         ax.legend()
         ax.axis("equal")
+        ax.grid(True, alpha=0.3)
         return ax
 
 
-def extend_camber_line(
-    camber: Camber, section: SectionPerimiter, ext_factor: float
+def _extend_camber_line(
+    camber_line: PlaneCurve, section: SectionPerimiter, ext_factor: float
 ) -> ExtendCamberResult:
-    chord = camber.line.length()
-    tangent = camber.line.tangent()
+    chord = camber_line.length()
+    tangent = camber_line.tangent()
 
     # Create lines extending from the first and last points of the camber line
     LE_line = np.c_[
-        camber.line.start() - tangent.coords[0] * ext_factor * chord,
-        camber.line.start(),
+        camber_line.start() - tangent.coords[0] * ext_factor * chord,
+        camber_line.start(),
     ].T
     TE_line = np.c_[
-        camber.line.end() + tangent.coords[-1] * ext_factor * chord, camber.line.end()
+        camber_line.end() + tangent.coords[-1] * ext_factor * chord, camber_line.end()
     ].T
 
     # Intersect lines with the section curve to find new leading and trailing edge points
@@ -468,29 +535,32 @@ def extend_camber_line(
 
     # Ensure there is only one intersection point for each end
     if LE_point.shape[0] != 1 or TE_point.shape[0] != 1:
-        extended_camber = None
-        success = False
-        error_message = "Failed to find unique intersection points for LE or TE lines."
-    else:
-        new_coords = np.r_[LE_point, camber.line.coords, TE_point]
-        new_line = PlaneCurve.new_unit_speed(new_coords)
-        extended_camber = Camber(new_line)
-        success = True
-        error_message = ""
+        return ExtendCamberResult(
+            original_line=camber_line,
+            extended_line=None,
+            success=False,
+            section=section,
+            LE_line=LE_line,
+            TE_line=TE_line,
+            error_message="Failed to find unique intersection points for LE or TE lines.",
+        )
+
+    # Only one intersection point found for each end
+    new_coords = np.r_[LE_point, camber_line.coords, TE_point]
+    extended_line = PlaneCurve.new_unit_speed(new_coords)
 
     return ExtendCamberResult(
-        extended_camber,
-        success,
-        camber,
-        section,
-        LE_line,
-        TE_line,
-        error_message,
+        original_line=camber_line,
+        extended_line=extended_line,
+        success=True,
+        section=section,
+        LE_line=LE_line,
+        TE_line=TE_line,
     )
 
 
 ################################################################################
-###################### Camber line approximation ###############################
+####################### Camber line improvement ################################
 ################################################################################
 
 
@@ -503,6 +573,296 @@ class ApproximateCamberConfig:
     extension_factor: float = 0.1  # Factor of chord length for LE/TE extension
     num_points_le: int = 50
     num_points_te: int = 50
+    split_config: SplitConfig = field(default_factory=SplitConfig)
+
+
+@dataclass
+class CamberIterationResult:
+    prev_camber: Camber
+    prev_thickness: Thickness
+    section: SectionPerimiter
+    new_camber: Camber | None = None
+    new_thickness: Thickness | None = None
+    upper_targets: NDArray | None = None
+    lower_targets: NDArray | None = None
+    extend_result: ExtendCamberResult | None = None
+    delta: float = float("inf")
+    success: bool = False
+    error_message: str = ""
+
+    def plot(self, ax=None):
+        """
+        Plot the camber line, section, and target connections.
+
+        If success is True, also plots the new camber line.
+        Shows lines connecting corresponding points on upper and lower targets.
+
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes, optional
+            Axes object to plot on. If None, creates new figure and axes.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The axes object containing the plot.
+        """
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(12, 8))
+
+        # Plot section perimeter
+        self.section.curve.plot(
+            ax=ax, label="Section", color="k", linestyle="-", alpha=0.7
+        )
+
+        # Plot previous camber line
+        self.prev_camber.line.plot(
+            ax=ax, label="Previous Camber", color="blue", linewidth=2
+        )
+
+        # Plot target points
+        if (self.upper_targets is not None) and (self.lower_targets is not None):
+            ax.scatter(
+                self.upper_targets[:, 0],
+                self.upper_targets[:, 1],
+                c="red",
+                s=20,
+                alpha=0.6,
+                label="Upper Targets",
+                marker="^",
+            )
+            ax.scatter(
+                self.lower_targets[:, 0],
+                self.lower_targets[:, 1],
+                c="green",
+                s=20,
+                alpha=0.6,
+                label="Lower Targets",
+                marker="v",
+            )
+
+            assert len(self.upper_targets) == len(
+                self.lower_targets
+            ), "Expected equal number of upper and lower targets"
+
+            # Plot connecting lines between corresponding upper and lower targets
+            for i in range(len(self.upper_targets)):
+                ax.plot(
+                    [self.upper_targets[i, 0], self.lower_targets[i, 0]],
+                    [self.upper_targets[i, 1], self.lower_targets[i, 1]],
+                    "gray",
+                    alpha=0.3,
+                    linewidth=0.5,
+                )
+
+        # If successful, plot the new camber line
+        if self.success and self.new_camber is not None:
+            self.new_camber.line.plot(
+                ax=ax, label="New Camber", color="purple", linewidth=2, alpha=0.8
+            )
+
+        # Plot extend result if available and requested
+        if self.extend_result is not None:
+            # Plot extension lines
+            ax.plot(
+                self.extend_result.LE_line[:, 0],
+                self.extend_result.LE_line[:, 1],
+                "r:",
+                label="LE Extension Line",
+                linewidth=1.5,
+                alpha=0.7,
+            )
+            ax.plot(
+                self.extend_result.TE_line[:, 0],
+                self.extend_result.TE_line[:, 1],
+                "g:",
+                label="TE Extension Line",
+                linewidth=1.5,
+                alpha=0.7,
+            )
+
+        # Set title based on success status
+        if self.success:
+            title = f"Camber Iteration Result (Success - δ={self.delta:.2e})"
+            if self.extend_result is not None:
+                extend_status = (
+                    "Extended" if self.extend_result.success else "Extension Failed"
+                )
+                title += f" - {extend_status}"
+        else:
+            title = f"Camber Iteration Result (Failed - {self.error_message})"
+
+        ax.set_title(title)
+        ax.legend()
+        ax.axis("equal")
+        ax.grid(True, alpha=0.3)
+        return ax
+
+
+def _find_best_intersection(intersections: NDArray, target_point: NDArray) -> NDArray:
+    """Find the closest intersection point to the target."""
+    if intersections.shape[0] == 0:
+        raise ValueError("No intersections found")
+    if intersections.shape[0] == 1:
+        return intersections[0]
+
+    distances = np.linalg.norm(intersections - target_point, axis=1)
+    return intersections[np.argmin(distances)]
+
+
+def _compute_intersection_coords(
+    camber_point: NDArray,
+    upper_target: NDArray,
+    lower_target: NDArray,
+    normal: NDArray,
+    thickness_value: float,
+    section: SectionPerimiter,
+) -> tuple[NDArray, NDArray, bool]:
+    """Compute upper and lower intersection coordinates for a single point."""
+    try:
+        # Find intersections
+        int_u = section.curve.intersect_coords(np.c_[camber_point, upper_target].T)
+        int_l = section.curve.intersect_coords(np.c_[lower_target, camber_point].T)
+
+        # Get best intersections. Will throw if no intersections found
+        upper_coord = _find_best_intersection(int_u, upper_target)
+        lower_coord = _find_best_intersection(int_l, lower_target)
+
+        return upper_coord, lower_coord, True
+
+    except Exception:
+        # Fallback to normal projection
+        upper_coord = camber_point + thickness_value * normal
+        lower_coord = camber_point - thickness_value * normal
+        return upper_coord, lower_coord, False
+
+
+def _calc_new_camber_thickness(
+    upper_coords: NDArray, lower_coords: NDArray
+) -> tuple[NDArray, NDArray]:
+    """Create new camber and thickness from computed coordinates."""
+    new_camber_coords = (upper_coords + lower_coords) / 2
+    new_thickness_values = np.linalg.norm(upper_coords - lower_coords, axis=1)
+    return new_camber_coords, new_thickness_values
+
+
+def improve_camber_robust(
+    camber: Camber,
+    thickness: Thickness,
+    section: SectionPerimiter,
+    config: ApproximateCamberConfig,
+) -> CamberIterationResult:
+    """Robust version of camber improvement with proper error handling."""
+    try:
+        N = len(thickness.t)
+        normal = camber.line.signed_normal()
+        scaled_thickness = config.thickness_scale * thickness.t[:, np.newaxis]
+        camber_coords = camber.line.coords
+        upper_targets = camber_coords + 0.5 * scaled_thickness * normal.coords
+        lower_targets = camber_coords - 0.5 * scaled_thickness * normal.coords
+
+        upper_intersections = np.zeros((N - 2, 2))
+        lower_intersections = np.zeros((N - 2, 2))
+        successful_intersections = 0
+
+        # Process each point along the camber line
+        # i is the index for the input arrays (1 to N-1, inclusive)
+        # j is the index for the output arrays (0 to N-2, inclusive)
+        for i, j in zip(range(1, N - 1), range(N - 2)):
+            c = camber_coords[i]
+            u = upper_targets[i]
+            l = lower_targets[i]
+
+            upper_intersections[j], lower_intersections[j], success = (
+                _compute_intersection_coords(
+                    c,
+                    u,
+                    l,
+                    normal.coords[i],
+                    thickness.t[i],
+                    section,
+                )
+            )
+
+            if success:
+                successful_intersections += 1
+
+        # Require all intersections to be successful
+        min_required = N - 2
+        if successful_intersections < min_required:
+            return CamberIterationResult(
+                prev_camber=camber,
+                prev_thickness=thickness,
+                section=section,
+                upper_targets=upper_targets,
+                lower_targets=lower_targets,
+                error_message=f"Only {successful_intersections}/{N} intersections found (need {min_required})",
+            )
+
+        # Create new camber and thickness exclusing leading and trailing edges
+        short_camber_coords, short_thickness_values = _calc_new_camber_thickness(
+            upper_intersections, lower_intersections
+        )
+
+        # Apply relaxation
+        camber_coords_short = camber.line.coords[1:-1]  # Exclude LE and TE
+        delta_coords = (short_camber_coords - camber_coords_short) * config.relax_factor
+        relaxed_coords_short = camber_coords_short + delta_coords
+
+        # Use the relaxed coordinates to create a new short camber line
+        short_camber_line = PlaneCurve(relaxed_coords_short, camber.line.param[1:-1])
+
+        # Extend to leading and trailing edges
+        new_thickness_values = np.r_[0, short_thickness_values, 0]
+        extend_result = _extend_camber_line(
+            short_camber_line, section, config.extension_factor
+        )
+        if not extend_result.success:
+            return CamberIterationResult(
+                prev_camber=camber,
+                prev_thickness=thickness,
+                section=section,
+                upper_targets=upper_targets,
+                lower_targets=lower_targets,
+                extend_result=extend_result,
+                error_message=extend_result.error_message,
+            )
+        new_camber_line = extend_result.unwrap()
+
+        # Create final camber and thickness objects
+        new_thickness = Thickness(thickness.s, new_thickness_values, thickness.chord)
+        final_camber = Camber(new_camber_line)
+
+        # Calculate delta as the sum of distance moved by each camber point
+        delta = np.sum(
+            np.linalg.norm(new_camber_line.coords - camber.line.coords, axis=1)
+        )
+
+        return CamberIterationResult(
+            prev_camber=camber,
+            new_camber=final_camber,
+            prev_thickness=thickness,
+            new_thickness=new_thickness,
+            section=section,
+            upper_targets=upper_targets,
+            lower_targets=lower_targets,
+            extend_result=extend_result,
+            delta=delta,
+            success=True,
+        )
+
+    except Exception as e:
+        return CamberIterationResult(
+            prev_camber=camber,
+            prev_thickness=thickness,
+            section=section,
+            error_message=str(e),
+        )
+
+
+################################################################################
+###################### Camber line approximation ###############################
+################################################################################
 
 
 @dataclass
@@ -516,15 +876,21 @@ class CamberProgress:
 
 @dataclass
 class ApproximateCamberResult:
-    section: Section | None  # Set if the approximation was successful
-    success: bool
     section_perimiter: SectionPerimiter
     split_result: SplitSectionResult
-    initial_camber: Camber | None  # Set if the split was successful
-    initial_thickness: Thickness | None  # Set if the split was successful
-    iterations: int
-    final_delta: float
-    convergence_history: list[float]
+
+    initial_extension_result: ExtendCamberResult | None = None
+    initial_camber: Camber | None = None
+    initial_thickness: Thickness | None = None
+
+    iteration_results: list[CamberIterationResult] = field(default_factory=list)
+    iterations: int = 0
+    final_delta: float = float("inf")
+    convergence_history: list[float] = field(default_factory=list)
+
+    section: Section | None = None
+    success: bool = False
+
     error_message: str = ""
 
     def unwrap(self) -> Section:
@@ -534,6 +900,11 @@ class ApproximateCamberResult:
 
     def plot_split_summary(self):
         return self.split_result.plot_summary()
+
+    def plot_initial_extension(self):
+        if self.initial_extension_result is None:
+            raise ValueError("Initial extension result must be set for plotting.")
+        self.initial_extension_result.plot()
 
     def plot_initial_camber(self, show_closeups=True):
         """
@@ -654,49 +1025,73 @@ class CamberApproximationError(Exception):
 
 def approximate_camber(
     section: SectionPerimiter,
-    split_config: SplitConfig | None = None,
-    approx_camber_config: ApproximateCamberConfig | None = None,
+    config: ApproximateCamberConfig | None = None,
     callback: ApproximateCamberCallback | None = None,
 ) -> ApproximateCamberResult:
     # Set defaults
-    split_config = split_config or SplitConfig()
-    approx_camber_config = approx_camber_config or ApproximateCamberConfig()
+    config = config or ApproximateCamberConfig()
+    split_config = config.split_config
 
     # Split the section into upper and lower curves
     split_result = split_section(section, split_config)
     if not split_result.success:
         return ApproximateCamberResult(
-            section=None,
-            split_result=split_result,
-            initial_camber=None,
-            initial_thickness=None,
-            success=False,
-            iterations=0,
-            final_delta=0.0,
-            convergence_history=[],
-            error_message=split_result.error_message,
             section_perimiter=section,
+            split_result=split_result,
+            error_message=split_result.error_message,
         )
 
     # Initialize camber and thickness
     assert split_result.upper_curve is not None, "Expected upper curve to be valid"
     assert split_result.lower_curve is not None, "Expected lower curve to be valid"
-    initial_camber, initial_thickness = _initial_guess(
+    short_camber_line, short_thickness_values = _initial_guess(
         split_result.upper_curve, split_result.lower_curve
     )
 
+    # Extend camber line
+    initial_extend_result = _extend_camber_line(
+        short_camber_line, section, config.extension_factor
+    )
+    if not initial_extend_result.success:
+        return ApproximateCamberResult(
+            section_perimiter=section,
+            split_result=split_result,
+            initial_extension_result=initial_extend_result,
+            error_message=initial_extend_result.error_message,
+        )
+    initial_camber = Camber(initial_extend_result.unwrap())
+
+    # Extend thickness
+    thickness_values = np.r_[0, short_thickness_values, 0]
+    initial_thickness = Thickness(
+        initial_camber.s, thickness_values, initial_camber.chord
+    )
+
     # TESTING
+    # run one iteration loop
+    improve_result = improve_camber_robust(
+        initial_camber, initial_thickness, section, config
+    )
+
+    if not improve_result.success:
+        return ApproximateCamberResult(
+            section_perimiter=section,
+            split_result=split_result,
+            initial_extension_result=initial_extend_result,
+            initial_camber=initial_camber,
+            initial_thickness=initial_thickness,
+            iteration_results=[improve_result],
+            error_message=improve_result.error_message,
+        )
+
     return ApproximateCamberResult(
-        section=None,  # Set to None until we create the final section
+        section_perimiter=section,
         split_result=split_result,
+        initial_extension_result=initial_extend_result,
         initial_camber=initial_camber,
         initial_thickness=initial_thickness,
-        success=False,  # Set to False until we run the iteration loop
-        iterations=0,
-        final_delta=0.0,
-        convergence_history=[],
-        error_message="",
-        section_perimiter=section,
+        iteration_results=[improve_result],
+        success=True,  # Set to False until we run the iteration loop
     )
 
     # # Run iterative improvement
@@ -741,15 +1136,6 @@ def approximate_camber(
     #     error_message=error_message,
     #     section_perimiter=section,
     # )
-
-
-@dataclass
-class CamberIterationResult:
-    camber: Camber
-    thickness: Thickness
-    delta: float
-    success: bool
-    error_message: str = ""
 
 
 #################
@@ -874,96 +1260,6 @@ def _create_final_section_safe(
 
     except Exception as e:
         return None, f"Unexpected error in final section creation: {str(e)}"
-
-
-def improve_camber_robust(
-    camber: Camber,
-    thickness: Thickness,
-    section: SectionPerimiter,
-    config: ApproximateCamberConfig,
-) -> CamberIterationResult:
-    """Robust version of camber improvement with proper error handling."""
-    try:
-        N = len(thickness.t)
-        upper_coords = np.zeros((N, 2))
-        lower_coords = np.zeros((N, 2))
-
-        normal = camber.line.signed_normal()
-
-        successful_intersections = 0
-        for i in range(N):
-            c = camber.line.coords[i]
-            u = c + config.thickness_scale * thickness.t[i] * normal.coords[i]
-            l = c - config.thickness_scale * thickness.t[i] * normal.coords[i]
-
-            # Try to find intersections with error handling
-            int_u = section.curve.intersect_coords(np.c_[c, u].T)
-            int_l = section.curve.intersect_coords(np.c_[l, c].T)
-
-            # Handle multiple or no intersections gracefully
-            if int_u.shape[0] == 1 and int_l.shape[0] == 1:
-                upper_coords[i] = int_u[0]
-                lower_coords[i] = int_l[0]
-                successful_intersections += 1
-            elif int_u.shape[0] > 1 or int_l.shape[0] > 1:
-                # Take closest intersection
-                if int_u.shape[0] > 1:
-                    distances = np.linalg.norm(int_u - u, axis=1)
-                    upper_coords[i] = int_u[np.argmin(distances)]
-                else:
-                    upper_coords[i] = int_u[0]
-
-                if int_l.shape[0] > 1:
-                    distances = np.linalg.norm(int_l - l, axis=1)
-                    lower_coords[i] = int_l[np.argmin(distances)]
-                else:
-                    lower_coords[i] = int_l[0]
-                successful_intersections += 1
-            else:
-                # No intersection found - keep previous position
-                upper_coords[i] = (
-                    camber.line.coords[i] + thickness.t[i] * normal.coords[i]
-                )
-                lower_coords[i] = (
-                    camber.line.coords[i] - thickness.t[i] * normal.coords[i]
-                )
-
-        if successful_intersections < N * 0.8:  # Less than 80% success rate
-            return CamberIterationResult(
-                camber=camber,
-                thickness=thickness,
-                delta=float("inf"),
-                success=False,
-                error_message=f"Only {successful_intersections}/{N} intersections found",
-            )
-
-        # Create new camber line
-        camber_coords = (upper_coords + lower_coords) / 2
-        new_camber = Camber(PlaneCurve.new_unit_speed(camber_coords))
-        new_thickness_values = np.linalg.norm(upper_coords - lower_coords, axis=1)
-        new_thickness = Thickness(thickness.s, new_thickness_values, new_camber.chord)
-
-        # Apply relaxation
-        delta_coords = (
-            new_camber.line.coords - camber.line.coords
-        ) * config.relax_factor
-        relaxed_coords = camber.line.coords + delta_coords
-        final_camber = Camber(PlaneCurve(relaxed_coords, camber.line.param))
-
-        delta = np.sum(np.linalg.norm(delta_coords, axis=1))
-
-        return CamberIterationResult(
-            camber=final_camber, thickness=new_thickness, delta=delta, success=True
-        )
-
-    except Exception as e:
-        return CamberIterationResult(
-            camber=camber,
-            thickness=thickness,
-            delta=float("inf"),
-            success=False,
-            error_message=str(e),
-        )
 
 
 @dataclass
