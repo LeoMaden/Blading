@@ -587,17 +587,15 @@ class ExtendCamberResult:
             lambda ax: ax.plot(
                 self.LE_line[:, 0],
                 self.LE_line[:, 1],
-                "r--",
+                "r:",
                 label="LE Extension Line",
-                linewidth=2,
                 alpha=0.8,
             ),
             lambda ax: ax.plot(
                 self.TE_line[:, 0],
                 self.TE_line[:, 1],
-                "g--",
+                "g:",
                 label="TE Extension Line",
-                linewidth=2,
                 alpha=0.8,
             ),
         ]
@@ -611,23 +609,18 @@ class ExtendCamberResult:
                         label="Extended Camber",
                         color="m",
                         linestyle="--",
-                        linewidth=3,
                         alpha=0.9,
                     ),
                     lambda ax: ax.plot(
                         *self.extended_line.start(),
                         "co",
-                        markersize=8,
                         markeredgecolor="k",
-                        markeredgewidth=1,
                         label="New LE Point",
                     ),
                     lambda ax: ax.plot(
                         *self.extended_line.end(),
                         "cs",
-                        markersize=8,
                         markeredgecolor="k",
-                        markeredgewidth=1,
                         label="New TE Point",
                     ),
                 ]
@@ -785,95 +778,103 @@ class CamberIterationResult:
     success: bool = False
     error_message: str = ""
 
-    def plot(self, ax=None):
+    def plot(self, show_closeups=True):
         """
-        Plot the camber line, section, and target connections.
+        Plot the camber line, section, and target connections using multi-view layout.
 
         If success is True, also plots the new camber line.
         Shows lines connecting corresponding points on upper and lower targets.
 
         Parameters
         ----------
-        ax : matplotlib.axes.Axes, optional
-            Axes object to plot on. If None, creates new figure and axes.
+        show_closeups : bool, optional
+            Whether to show LE/TE closeup views.
 
         Returns
         -------
-        matplotlib.axes.Axes
-            The axes object containing the plot.
+        matplotlib.figure.Figure
+            The figure returned by create_multi_view_plot.
         """
-        if ax is None:
-            fig, ax = plt.subplots(figsize=(12, 8))
+        # Use create_multi_view_plot for multi-panel layout
+        plot_functions = [
+            lambda ax: self.section.curve.plot(
+                ax=ax, label="Section", color="k", linestyle="-", alpha=0.7
+            ),
+            lambda ax: self.prev_camber.line.plot(
+                ax=ax, label="Previous Camber", color="b"
+            ),
+        ]
 
-        # Plot section perimeter
-        self.section.curve.plot(
-            ax=ax, label="Section", color="k", linestyle="-", alpha=0.7
-        )
-
-        # Plot previous camber line
-        self.prev_camber.line.plot(
-            ax=ax, label="Previous Camber", color="blue", linewidth=2
-        )
-
-        # Plot target points
+        # Add target points and connecting lines
         if (self.upper_targets is not None) and (self.lower_targets is not None):
-            ax.scatter(
-                self.upper_targets[:, 0],
-                self.upper_targets[:, 1],
-                c="red",
-                s=20,
-                alpha=0.6,
-                label="Upper Targets",
-                marker="^",
+            # Capture references to avoid None type issues in lambdas
+            upper_targets = self.upper_targets
+            lower_targets = self.lower_targets
+
+            plot_functions.extend(
+                [
+                    lambda ax: ax.scatter(
+                        upper_targets[:, 0],
+                        upper_targets[:, 1],
+                        c="r",
+                        s=20,
+                        alpha=0.6,
+                        label="Upper Targets",
+                        marker="^",
+                    ),
+                    lambda ax: ax.scatter(
+                        lower_targets[:, 0],
+                        lower_targets[:, 1],
+                        c="g",
+                        s=20,
+                        alpha=0.6,
+                        label="Lower Targets",
+                        marker="v",
+                    ),
+                ]
             )
-            ax.scatter(
-                self.lower_targets[:, 0],
-                self.lower_targets[:, 1],
-                c="green",
-                s=20,
-                alpha=0.6,
-                label="Lower Targets",
-                marker="v",
-            )
 
-            assert len(self.upper_targets) == len(
-                self.lower_targets
-            ), "Expected equal number of upper and lower targets"
+            # Add connecting lines function
+            def plot_connecting_lines(ax):
+                for i in range(len(upper_targets)):
+                    ax.plot(
+                        [upper_targets[i, 0], lower_targets[i, 0]],
+                        [upper_targets[i, 1], lower_targets[i, 1]],
+                        color="gray",
+                        alpha=0.3,
+                    )
 
-            # Plot connecting lines between corresponding upper and lower targets
-            for i in range(len(self.upper_targets)):
-                ax.plot(
-                    [self.upper_targets[i, 0], self.lower_targets[i, 0]],
-                    [self.upper_targets[i, 1], self.lower_targets[i, 1]],
-                    "gray",
-                    alpha=0.3,
-                    linewidth=0.5,
-                )
+            plot_functions.append(plot_connecting_lines)
 
-        # If successful, plot the new camber line
+        # Add new camber if successful
         if self.success and self.new_camber is not None:
-            self.new_camber.line.plot(
-                ax=ax, label="New Camber", color="purple", linewidth=2, alpha=0.8
+            new_camber_line = self.new_camber.line
+            plot_functions.append(
+                lambda ax: new_camber_line.plot(
+                    ax=ax, label="New Camber", color="m", alpha=0.8
+                )
             )
 
-        # Plot extend result if available and requested
+        # Add extend result if available
         if self.extend_result is not None:
-            # Plot extension lines
-            ax.plot(
-                self.extend_result.LE_line[:, 0],
-                self.extend_result.LE_line[:, 1],
-                "r:",
-                label="LE Extension Line",
-                linewidth=1.5,
-                alpha=0.7,
-            )
-            ax.plot(
-                self.extend_result.TE_line[:, 0],
-                self.extend_result.TE_line[:, 1],
-                "g:",
-                label="TE Extension Line",
-                linewidth=1.5,
-                alpha=0.7,
+            extend_result = self.extend_result
+            plot_functions.extend(
+                [
+                    lambda ax: ax.plot(
+                        extend_result.LE_line[:, 0],
+                        extend_result.LE_line[:, 1],
+                        "r:",
+                        label="LE Extension Line",
+                        alpha=0.7,
+                    ),
+                    lambda ax: ax.plot(
+                        extend_result.TE_line[:, 0],
+                        extend_result.TE_line[:, 1],
+                        "g:",
+                        label="TE Extension Line",
+                        alpha=0.7,
+                    ),
+                ]
             )
 
         # Set title based on success status
@@ -887,11 +888,19 @@ class CamberIterationResult:
         else:
             title = f"Camber Iteration Result (Failed - {self.error_message})"
 
-        ax.set_title(title)
-        ax.legend()
-        ax.axis("equal")
-        ax.grid(True, alpha=0.3)
-        return ax
+        # Use the new camber line for zoom reference, fall back to previous camber
+        camber_line = (
+            self.new_camber.line
+            if (self.success and self.new_camber)
+            else self.prev_camber.line
+        )
+
+        return create_multi_view_plot(
+            plot_functions=plot_functions,
+            camber_line=camber_line,
+            title=title,
+            show_closeups=show_closeups,
+        )
 
 
 def _find_best_intersection(intersections: NDArray, target_point: NDArray) -> NDArray:
@@ -958,6 +967,8 @@ def improve_camber_robust(
 
         upper_intersections = np.zeros((N - 2, 2))
         lower_intersections = np.zeros((N - 2, 2))
+        upper_targets = upper_targets[1:-1]  # Exclude LE and TE
+        lower_targets = lower_targets[1:-1]
         successful_intersections = 0
 
         # Process each point along the camber line
@@ -965,8 +976,8 @@ def improve_camber_robust(
         # j is the index for the output arrays (0 to N-2, inclusive)
         for i, j in zip(range(1, N - 1), range(N - 2)):
             c = camber_coords[i]
-            u = upper_targets[i]
-            l = lower_targets[i]
+            u = upper_targets[j]
+            l = lower_targets[j]
 
             upper_intersections[j], lower_intersections[j], success = (
                 _compute_intersection_coords(
