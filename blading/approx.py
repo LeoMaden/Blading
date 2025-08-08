@@ -12,30 +12,110 @@ from .thickness import Thickness
 from scipy.signal import find_peaks
 
 
-################# LE and TE detection #################
+################################################################################
+########################## Section splitting ###################################
+################################################################################
 
 
 @dataclass
 class SplitConfig:
-    curvature_threshold_factor: float = 0.2
+    """
+    Configuration parameters for airfoil section splitting based on curvature analysis.
+
+    Controls the thresholds and parameters used to identify low-curvature regions
+    along an airfoil section perimeter for extracting upper and lower surface curves.
+
+    Parameters
+    ----------
+    curvature_threshold_factor : float, optional
+        Multiplier applied to the smallest detected curvature peak to determine
+        the threshold for masking high curvature regions. Higher values result
+        in more restrictive thresholds. Default is 0.9.
+    curvature_prominence_factor : float, optional
+        Minimum prominence of curvature peaks to consider, specified as a fraction
+        of the maximum curvature value. Used to filter noise and identify significant
+        curvature features. Default is 0.1.
+    min_segment_length : int, optional
+        Minimum length (in number of points) required for a continuous low-curvature
+        segment to be considered valid. Shorter segments are discarded. Default is 10.
+
+    Notes
+    -----
+    These parameters work together to control the sensitivity of the splitting algorithm:
+    - Lower curvature_threshold_factor values make the algorithm more permissive
+    - Higher curvature_prominence_factor values require more pronounced curvature peaks
+    - Higher min_segment_length values require longer continuous low-curvature regions
+    """
+    curvature_threshold_factor: float = 0.9
     curvature_prominence_factor: float = 0.1
     min_segment_length: int = 10
 
 
 @dataclass
 class SplitSectionResult:
+    """
+    Result of splitting an airfoil section perimeter into upper and lower curves.
+
+    Contains the extracted curves along with diagnostic information about the
+    splitting process, including curvature analysis data and success status.
+
+    Parameters
+    ----------
+    upper_curve : PlaneCurve or None
+        The upper surface curve of the airfoil, or None if splitting failed.
+    lower_curve : PlaneCurve or None
+        The lower surface curve of the airfoil, or None if splitting failed.
+    success : bool
+        True if exactly two segments were found and curves extracted successfully.
+    section : SectionPerimiter
+        The original section perimeter that was split.
+    segments : list of tuple
+        List of (start, end) index tuples representing the detected low-curvature
+        segments along the perimeter.
+    curvature_threshold : float
+        The threshold value used for curvature-based masking during splitting.
+    s_data : NDArray
+        Normalized arc length parameter values along the section perimeter.
+    curvature_data : NDArray
+        Curvature values computed along the section perimeter for diagnostic purposes.
+    error_message : str, optional
+        Description of any errors or warnings encountered during splitting. Default is "".
+
+    Methods
+    -------
+    plot_curvature(ax=None)
+        Plot the curvature data with threshold and detected segments.
+    plot_section(ax=None)
+        Plot the original section and extracted upper/lower curves.
+    plot_summary()
+        Create a summary plot showing both curvature analysis and section curves.
+    """
+
     upper_curve: PlaneCurve | None
     lower_curve: PlaneCurve | None
     success: bool
 
     section: SectionPerimiter
-    segments: list[tuple[int, int]]  # List of (start, end) indices for segments
+    segments: list[tuple[int, int]]
     curvature_threshold: float
     s_data: NDArray
-    curvature_data: NDArray  # For diagnostics
+    curvature_data: NDArray
     error_message: str = ""
 
     def plot_curvature(self, ax=None):
+        """
+        Plot the curvature data with threshold and detected segments.
+
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes, optional
+            Axes object to plot on. If None, creates new figure and axes.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The axes object containing the curvature plot.
+        """
         if ax is None:
             fig, ax = plt.subplots()
 
@@ -55,6 +135,19 @@ class SplitSectionResult:
         return ax
 
     def plot_section(self, ax=None):
+        """
+        Plot the original section and extracted upper/lower curves.
+
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes, optional
+            Axes object to plot on. If None, creates new figure and axes.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The axes object containing the section plot.
+        """
         if ax is None:
             fig, ax = plt.subplots()
 
@@ -71,44 +164,195 @@ class SplitSectionResult:
         return ax
 
     def plot_summary(self):
+        """
+        Create a summary plot showing both curvature analysis and section curves.
+
+        Creates a two-panel figure with curvature analysis on the left and
+        the section with extracted curves on the right.
+
+        Returns
+        -------
+        tuple
+            (figure, (ax1, ax2)) where ax1 contains curvature plot and ax2 contains section plot.
+        """
         fig, (ax1, ax2) = plt.subplots(ncols=2, figsize=(14, 6))
         self.plot_curvature(ax1)
         self.plot_section(ax2)
+        return fig, (ax1, ax2)
 
 
-def threshold_masking(
-    curvature, threshold_factor: float = 3, prominence_factor: float = 0.1
+def split_section(
+    section: SectionPerimiter,
+    config: SplitConfig | None = None,
 ):
     """
-    Mask high curvature regions based on a threshold
+    Split an airfoil section perimeter into upper and lower curves based on curvature analysis.
 
-    Parameters:
-    curvature: array of curvature values
-    threshold_factor: multiplier of smallest peak
-    prominence_factor: minimum prominence of peaks to consider relative to max curvature
+    Analyzes the curvature along the section perimeter to identify regions of low curvature,
+    which typically correspond to the upper and lower surfaces of an airfoil. Uses threshold
+    masking and segment detection to extract exactly two continuous segments representing
+    the upper and lower curves.
+
+    Parameters
+    ----------
+    section : SectionPerimiter
+        The airfoil section perimeter to split, containing a closed curve representing
+        the airfoil boundary.
+    config : SplitConfig or None, optional
+        Configuration parameters for the splitting algorithm. If None, uses default
+        SplitConfig values. Default is None.
+
+    Returns
+    -------
+    SplitSectionResult
+        Result object containing the extracted upper and lower curves (if successful),
+        diagnostic information, and success status. See SplitSectionResult documentation
+        for detailed field descriptions.
+
+    Notes
+    -----
+    The algorithm works by:
+    1. Computing curvature along the normalized arc length parameter
+    2. Applying threshold masking to identify low curvature regions
+    3. Finding continuous segments that meet minimum length requirements
+    4. Extracting upper and lower curves if exactly 2 segments are found
+
+    The lower curve coordinates are reversed to maintain consistent orientation.
+    Success requires exactly two segments to be detected; any other number results
+    in failure with appropriate error messaging.
+    """
+    if config is None:
+        config = SplitConfig()
+
+    # Normalised arc length parameter, enforced by SectionPerimiter
+    s = section.curve.param
+
+    # Calculate curvature
+    curvature = section.curve.curvature()
+
+    # Apply threshold masking
+    low_curvature_mask, threshold = _threshold_masking(
+        curvature=curvature,
+        threshold_factor=config.curvature_threshold_factor,
+        prominence_factor=config.curvature_prominence_factor,
+    )
+
+    # Find continuous segments of low curvature
+    segments = _find_continuous_segments(
+        mask=low_curvature_mask,
+        min_length=config.min_segment_length,
+    )
+
+    # Early return with failure if anything other than 2 segments found
+    if len(segments) != 2:
+        return SplitSectionResult(
+            upper_curve=None,
+            lower_curve=None,
+            success=False,
+            section=section,
+            segments=segments,
+            curvature_threshold=threshold,
+            s_data=s,
+            curvature_data=curvature,
+            error_message=(
+                "Failed to split section into exactly two segments. "
+                f"Found {len(segments)} segments."
+            ),
+        )
+
+    # Exactly two segments found, extract upper and lower curves
+    upper_coords = section.curve.coords[segments[0][0] : segments[0][1]]
+    lower_coords = section.curve.coords[segments[1][0] : segments[1][1]][::-1]
+
+    upper_curve = PlaneCurve.new_unit_speed(upper_coords)
+    lower_curve = PlaneCurve.new_unit_speed(lower_coords)
+
+    return SplitSectionResult(
+        upper_curve=upper_curve,
+        lower_curve=lower_curve,
+        success=True,
+        section=section,
+        segments=segments,
+        curvature_threshold=threshold,
+        s_data=s,
+        curvature_data=curvature,
+        error_message="",
+    )
+
+
+def _threshold_masking(
+    curvature, threshold_factor: float = 3, prominence_factor: float = 0.1
+) -> tuple[NDArray, float]:
+    """
+    Mask high curvature regions based on a threshold.
+
+    Identifies peaks in the curvature array using a specified prominence, then masks out regions where the curvature exceeds a threshold determined by the smallest detected peak and a threshold factor.
+
+    Parameters
+    ----------
+    curvature : array_like
+        Array of curvature values.
+    threshold_factor : float, optional
+        Multiplier applied to the smallest detected peak to determine the curvature threshold. Default is 3.
+    prominence_factor : float, optional
+        Minimum prominence of peaks to consider, specified as a fraction of the maximum curvature. Default is 0.1.
+
+    Returns
+    -------
+    low_curvature_mask : ndarray of bool
+        Boolean mask array where True indicates low curvature regions (below threshold).
+    threshold : float
+        The curvature threshold used for masking.
+
+    Raises
+    ------
+    ValueError
+        If no peaks are found in the curvature data.
     """
     # Find the smallest peak in curvature with a given prominence
+    prominence = np.max(curvature) * prominence_factor
+    peaks, _ = find_peaks(curvature, prominence=prominence)
 
-    peaks, properties = find_peaks(curvature, prominence=0.01 * np.max(curvature))
-    if len(peaks) > 0:
-        threshold = np.min(curvature[peaks]) * threshold_factor
-    else:
-        # If no peaks use maximum curvature
-        threshold = np.max(curvature) * threshold_factor
+    if len(peaks) == 0:
+        raise ValueError("No peaks found in curvature data")
 
     # Create mask: True for low curvature, False for high curvature
+    threshold = np.min(curvature[peaks]) * threshold_factor
+
     low_curvature_mask = curvature < threshold
 
     return low_curvature_mask, threshold
 
 
-def find_continuous_segments(mask, min_length=10):
+def _find_continuous_segments(mask, min_length=10):
     """
-    Find continuous segments of True values in the mask
+    Find continuous segments of True values in a boolean mask.
 
-    Parameters:
-    mask: boolean array
-    min_length: minimum length of segments to keep
+    Identifies consecutive True values in the input boolean array and returns
+    only those segments that meet the minimum length requirement.
+
+    Parameters
+    ----------
+    mask : array_like of bool
+        Boolean array where True values indicate regions of interest.
+    min_length : int, optional
+        Minimum length of segments to include in the output. Default is 10.
+
+    Returns
+    -------
+    list of tuple
+        List of (start, end) tuples representing the start and end indices
+        of continuous segments that meet the minimum length requirement.
+        End indices are exclusive (i.e., segment spans mask[start:end]).
+
+    Examples
+    --------
+    >>> mask = np.array([False, True, True, True, False, True, True, False])
+    >>> find_continuous_segments(mask, min_length=2)
+    [(1, 4), (5, 7)]
+
+    >>> find_continuous_segments(mask, min_length=5)
+    []
     """
     # Find where mask changes
     diff = np.diff(np.concatenate(([False], mask, [False])).astype(int))
@@ -121,65 +365,6 @@ def find_continuous_segments(mask, min_length=10):
             segments.append((start, end))
 
     return segments
-
-
-def split_section(
-    section: SectionPerimiter,
-    config: SplitConfig | None = None,
-):
-    if config is None:
-        config = SplitConfig()
-
-    # Ensure perimiter is going clockwise and starting from (near) the leading edge
-    # !todo
-
-    # Calculate normalised arc length and curvature
-    s = section.curve.reparameterise_unit().normalise().param
-    curvature = section.curve.curvature()
-
-    # Apply threshold masking
-    low_curvature_mask, threshold = threshold_masking(
-        curvature,
-        config.curvature_threshold_factor,
-        config.curvature_prominence_factor,
-    )
-
-    # Find continuous segments of low curvature
-    segments = find_continuous_segments(
-        low_curvature_mask,
-        config.min_segment_length,
-    )
-
-    if len(segments) == 2:
-        success = True
-        error_message = ""
-
-        upper_coords = section.curve.coords[segments[0][0] : segments[0][1]]
-        lower_coords = section.curve.coords[segments[1][0] : segments[1][1]][::-1]
-
-        upper_curve = PlaneCurve.new_unit_speed(upper_coords)
-        lower_curve = PlaneCurve.new_unit_speed(lower_coords)
-    else:
-        success = False
-        error_message = (
-            "Failed to split section into exactly two segments. "
-            f"Found {len(segments)} segments."
-        )
-
-        upper_curve = None
-        lower_curve = None
-
-    return SplitSectionResult(
-        upper_curve=upper_curve,
-        lower_curve=lower_curve,
-        success=success,
-        section=section,
-        segments=segments,
-        curvature_threshold=threshold,
-        s_data=s,
-        curvature_data=curvature,
-        error_message=error_message,
-    )
 
 
 ################# Extend camber line to LE and TE #################
@@ -256,57 +441,6 @@ def extend_camber_line(
         TE_line,
         error_message,
     )
-
-
-################# Camber Approximation #################
-
-
-@dataclass
-class ApproximateCamberConfig:
-    tolerance: float = 1e-7
-    max_iterations: int = 100
-    relax_factor: float = 0.2
-    thickness_scale: float = 1.2
-    extension_factor: float = 0.1  # Factor of chord length for LE/TE extension
-    num_points_le: int = 50
-    num_points_te: int = 50
-
-
-@dataclass
-class CamberProgress:
-    iteration: int
-    delta: float
-    camber: Camber
-    converged: bool
-    error: str | None = None
-
-
-@dataclass
-class ApproximateCamberResult:
-    section: Section | None
-    split_result: SplitSectionResult
-    success: bool
-    iterations: int
-    final_delta: float
-    convergence_history: list[float]
-    error_message: str = ""
-
-    def unwrap(self) -> Section:
-        if not self.success or self.section is None:
-            raise CamberApproximationError(self.error_message)
-        return self.section
-
-
-class ApproximateCamberCallback(Protocol):
-    def __call__(self, progress: CamberProgress) -> bool:
-        """Return False to abort iteration."""
-        ...
-
-
-class CamberApproximationError(Exception):
-    """Custom exception for errors during camber approximation."""
-
-    pass
 
 
 @dataclass
@@ -430,6 +564,59 @@ def _create_final_section_safe(
         return None, f"Unexpected error in final section creation: {str(e)}"
 
 
+################################################################################
+###################### Camber line approximation ###############################
+################################################################################
+
+
+@dataclass
+class ApproximateCamberConfig:
+    tolerance: float = 1e-7
+    max_iterations: int = 100
+    relax_factor: float = 0.2
+    thickness_scale: float = 1.2
+    extension_factor: float = 0.1  # Factor of chord length for LE/TE extension
+    num_points_le: int = 50
+    num_points_te: int = 50
+
+
+@dataclass
+class CamberProgress:
+    iteration: int
+    delta: float
+    camber: Camber
+    converged: bool
+    error: str | None = None
+
+
+@dataclass
+class ApproximateCamberResult:
+    section: Section | None
+    split_result: SplitSectionResult
+    success: bool
+    iterations: int
+    final_delta: float
+    convergence_history: list[float]
+    error_message: str = ""
+
+    def unwrap(self) -> Section:
+        if not self.success or self.section is None:
+            raise CamberApproximationError(self.error_message)
+        return self.section
+
+
+class ApproximateCamberCallback(Protocol):
+    def __call__(self, progress: CamberProgress) -> bool:
+        """Return False to abort iteration."""
+        ...
+
+
+class CamberApproximationError(Exception):
+    """Custom exception for errors during camber approximation."""
+
+    pass
+
+
 def approximate_camber(
     section: SectionPerimiter,
     split_config: SplitConfig | None = None,
@@ -507,6 +694,11 @@ class CamberIterationResult:
     error_message: str = ""
 
 
+################################################################################
+###################### Initial guess of camber and thickness ###################
+################################################################################
+
+
 def initial_thickness_guess(
     upper_curve: PlaneCurve, lower_curve: PlaneCurve
 ) -> Thickness:
@@ -521,6 +713,27 @@ def initial_thickness_guess(
 
     thickness_values = np.linalg.norm(upper_curve.coords - lower_curve.coords, axis=1)
     return Thickness(upper_curve.param, thickness_values, None)
+
+
+def initial_camber_guess(upper_curve: PlaneCurve, lower_curve: PlaneCurve) -> Camber:
+    """
+    Create an initial guess for the camber line as the average of upper and lower curves.
+    """
+
+    # Ensure both curves have normalised arc length parameterisation
+    upper_curve = upper_curve.reparameterise_unit().normalise()
+    lower_curve = lower_curve.reparameterise_unit().normalise()
+
+    # Interpolate the upper and lower curves to have equal number of points
+    # using the spacing from the curve with more points
+    if len(upper_curve.param) > len(lower_curve.param):
+        lower_curve = lower_curve.interpolate(upper_curve.param, k=2)
+    else:
+        upper_curve = upper_curve.interpolate(lower_curve.param, k=2)
+
+    # Average the coordinates of upper and lower curves
+    camber_coords = (upper_curve.coords + lower_curve.coords) / 2
+    return Camber(PlaneCurve.new_unit_speed(camber_coords))
 
 
 def improve_camber_robust(
@@ -722,24 +935,3 @@ def create_final_section(
             success=False,
             error_message=f"Unexpected error in create_final_section: {str(e)}",
         )
-
-
-def initial_camber_guess(upper_curve: PlaneCurve, lower_curve: PlaneCurve) -> Camber:
-    """
-    Create an initial guess for the camber line as the average of upper and lower curves.
-    """
-
-    # Ensure both curves have normalised arc length parameterisation
-    upper_curve = upper_curve.reparameterise_unit().normalise()
-    lower_curve = lower_curve.reparameterise_unit().normalise()
-
-    # Interpolate the upper and lower curves to have equal number of points
-    # using the spacing from the curve with more points
-    if len(upper_curve.param) > len(lower_curve.param):
-        lower_curve = lower_curve.interpolate(upper_curve.param, k=2)
-    else:
-        upper_curve = upper_curve.interpolate(lower_curve.param, k=2)
-
-    # Average the coordinates of upper and lower curves
-    camber_coords = (upper_curve.coords + lower_curve.coords) / 2
-    return Camber(PlaneCurve.new_unit_speed(camber_coords))
