@@ -101,23 +101,23 @@ class Thickness:
         # Calculate thickness gradient
         grad = np.gradient(self.t, self.s)
         grad_magnitude = np.abs(grad)
-        
+
         # Find gradient magnitude at s=0.9 as reference
         ref_grad_magnitude = np.interp(0.9, self.s, grad_magnitude)
-        
+
         # Create mask for high gradient points (>1.1x reference gradient)
         mask_high_grad = grad_magnitude > 1.1 * ref_grad_magnitude
-        
+
         # Create mask for fitting region (s > 0.85) excluding high gradient points
         mask_fit_region = (self.s > 0.85) & ~mask_high_grad
-        
+
         if not np.any(mask_fit_region):
             # No suitable points for fitting, return original
             return Thickness(self.s.copy(), self.t.copy())
-        
+
         # Fit straight line through fitting region
         poly = Polynomial.fit(self.s[mask_fit_region], self.t[mask_fit_region], deg=1)
-        
+
         # Find boundary between linear and high gradient regions for continuity
         fit_indices = np.where(mask_fit_region)[0]
         if len(fit_indices) > 0:
@@ -126,16 +126,16 @@ class Thickness:
             y_curve = self.t[boundary_idx]
             y_line = poly(self.s[boundary_idx])
             poly -= y_line - y_curve
-        
+
         # Create new thickness array
         new_t = self.t.copy()
         # Replace high gradient points with straight line approximation
         mask_replace = (self.s > 0.85) & mask_high_grad
         new_t[mask_replace] = poly(self.s[mask_replace])
-        
+
         return Thickness(self.s.copy(), new_t)
 
-    def add_round_TE(self, chord: float = 1) -> "Thickness":
+    def with_round_TE(self, chord: float = 1) -> "Thickness":
         # Thickness relative to chord.
         t_over_c = self.t / chord
 

@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from enum import Enum
-from .thickness import Thickness, ThicknessParams
+from .thickness import Thickness, ThicknessParams, create_thickness
 from .camber import Camber, CamberParams
 from geometry.curves import PlaneCurve
 import numpy as np
@@ -33,6 +33,24 @@ class Section:
     camber_params: CamberParams | None = None
 
     reference_point: ReferencePoint = ReferencePoint.Centroid
+
+    def with_thickness(self, thickness: Thickness | ThicknessParams) -> "Section":
+        """Create a new Section with the specified thickness."""
+        if isinstance(thickness, Thickness):
+            new_thickness = thickness
+        elif isinstance(thickness, ThicknessParams):
+            new_thickness = create_thickness(thickness).create_thickness(self.camber.s)
+        else:
+            raise TypeError("thickness must be Thickness or ThicknessParams")
+
+        return Section(
+            thickness=new_thickness,
+            camber=self.camber,
+            stream_line=self.stream_line,
+            thickness_params=self.thickness_params,
+            camber_params=self.camber_params,
+            reference_point=self.reference_point,
+        )
 
     def upper_curve(self) -> PlaneCurve:
         cl = self.camber.line.coords
@@ -183,36 +201,50 @@ class Section:
 
     def plot_comparison(self, other, ax=None, show_reference_points: bool = True):
         """Plot comparison between this section and another Section or SectionPerimiter.
-        
+
         Args:
             other: Another Section or SectionPerimiter object to compare with
             ax: Matplotlib axes object (optional)
             show_reference_points: Whether to show reference points for Section objects
-            
+
         Returns:
             Matplotlib axes object
         """
         import matplotlib.pyplot as plt
         from .section_perimiter import SectionPerimiter
-        
+
         if ax is None:
             _, ax = plt.subplots(figsize=(12, 8))
-        
+
         # Plot this section
-        self.plot(ax=ax, show_reference_point=show_reference_points, show_camber_line=True)
-        
+        self.plot(
+            ax=ax, show_reference_point=show_reference_points, show_camber_line=True
+        )
+
         # Update labels to distinguish from comparison
         for line in ax.get_lines():
-            if line.get_label() and not line.get_label().startswith('_'):
+            if line.get_label() and not line.get_label().startswith("_"):
                 line.set_label(f"Original {line.get_label()}")
-        
+
         # Plot the comparison object
         if isinstance(other, Section):
             # Plot another Section
             upper_curve, lower_curve = other.curves()
-            upper_curve.plot(ax=ax, color="orange", linewidth=2, linestyle=":", label="Comparison Upper surface")
-            lower_curve.plot(ax=ax, color="purple", linewidth=2, linestyle=":", label="Comparison Lower surface")
-            
+            upper_curve.plot(
+                ax=ax,
+                color="orange",
+                linewidth=2,
+                linestyle=":",
+                label="Comparison Upper surface",
+            )
+            lower_curve.plot(
+                ax=ax,
+                color="purple",
+                linewidth=2,
+                linestyle=":",
+                label="Comparison Lower surface",
+            )
+
             # Plot comparison camber line
             other.camber.line.plot(
                 ax=ax,
@@ -222,26 +254,39 @@ class Section:
                 alpha=0.7,
                 label="Comparison Camber line",
             )
-            
+
             # Plot comparison reference point
             if show_reference_points:
                 ref_coords = other.get_reference_point_coords()
                 ref_name = other.reference_point.display_name
-                ax.plot(ref_coords[0], ref_coords[1], 'mo', markersize=8, 
-                       label=f'Comparison Reference point ({ref_name})')
-                
+                ax.plot(
+                    ref_coords[0],
+                    ref_coords[1],
+                    "mo",
+                    markersize=8,
+                    label=f"Comparison Reference point ({ref_name})",
+                )
+
         elif isinstance(other, SectionPerimiter):
             # Plot SectionPerimiter
-            other.curve.plot(ax=ax, color="cyan", linewidth=2, linestyle=":", label="Comparison Perimeter")
-            
+            other.curve.plot(
+                ax=ax,
+                color="cyan",
+                linewidth=2,
+                linestyle=":",
+                label="Comparison Perimeter",
+            )
+
         else:
-            raise TypeError(f"Cannot compare with object of type {type(other)}. "
-                          "Expected Section or SectionPerimiter.")
-        
+            raise TypeError(
+                f"Cannot compare with object of type {type(other)}. "
+                "Expected Section or SectionPerimiter."
+            )
+
         # Update plot formatting
         ax.set_title("Section Comparison")
         ax.legend()
         ax.grid(True, alpha=0.3)
         ax.axis("equal")
-        
+
         return ax
