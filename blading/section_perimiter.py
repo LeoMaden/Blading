@@ -1,3 +1,4 @@
+from numpy.typing import NDArray
 from dataclasses import dataclass
 from typing import Optional
 from geometry.curves import PlaneCurve
@@ -54,26 +55,23 @@ def _find_leading_edge_index(curve: PlaneCurve) -> int:
     return int(np.argmin(curve.x))
 
 
-def _is_clockwise(curve: PlaneCurve) -> bool:
+def _is_clockwise(curve_coords: NDArray) -> bool:
     """
     Determine if a closed curve is oriented clockwise using the shoelace formula.
 
     Parameters
     ----------
-    curve : PlaneCurve
-        The curve to analyze.
+    curve_coords : NDArray, shape (n_points, 2)
+        Coordinates of the curve as a 2D array. Must not be closed.
 
     Returns
     -------
     bool
         True if the curve is oriented clockwise, False otherwise.
     """
-    x, y = curve.x, curve.y
+    x, y = curve_coords[:, 0], curve_coords[:, 1]
     # Shoelace formula for signed area
     signed_area = 0.5 * np.sum(x[:-1] * y[1:] - x[1:] * y[:-1])
-    # For a closed curve, also include the wraparound term
-    if not np.allclose(curve.start(), curve.end()):
-        signed_area += 0.5 * (x[-1] * y[0] - x[0] * y[-1])
 
     # Negative signed area indicates clockwise orientation
     return signed_area < 0
@@ -85,36 +83,33 @@ def _reorient_curve(curve: PlaneCurve) -> PlaneCurve:
 
     Parameters
     ----------
-    section : SectionPerimiter
-        The section to reorient.
+    curve : PlaneCurve
+        The curve to reorient.
 
     Returns
     -------
-    SectionPerimiter
-        Reoriented section starting from leading edge and going clockwise.
+    PlaneCurve
+        Reoriented curve starting from leading edge and going clockwise.
     """
     # Find leading edge index
     le_index = _find_leading_edge_index(curve)
 
+    # Remove duplicate point if curve is closed
+    is_closed = curve.is_closed
+    curve_coords = curve.coords
+    if is_closed:
+        curve_coords = curve_coords[:-1]
+
     # Reorder to start from leading edge
-    coords_reordered = np.roll(curve.coords, -le_index, axis=0)
-    param_reordered = np.roll(curve.param, -le_index, axis=0)
+    coords_reordered = np.roll(curve_coords, -le_index, axis=0)
 
-    # Create new curve starting from leading edge
-    reordered_curve = PlaneCurve(coords_reordered, param_reordered)
-
-    # Check if we need to reverse for clockwise orientation
-    if not _is_clockwise(reordered_curve):
+    if not _is_clockwise(coords_reordered):
         # Reverse the curve (except the first point to maintain starting point)
-        coords_reversed = np.concatenate(
-            [
-                coords_reordered[:1],  # Keep first point (leading edge)
-                coords_reordered[1:][::-1],  # Reverse the rest
-            ]
-        )
-        param_reversed = np.concatenate(
-            [param_reordered[:1], param_reordered[1:][::-1]]
-        )
-        reordered_curve = PlaneCurve(coords_reversed, param_reversed)
+        coords_reordered = np.r_[coords_reordered[0], coords_reordered[1:][::-1]]
 
+    # Ensure the curve is closed if it was originally closed
+    if is_closed:
+        coords_reordered = np.r_[coords_reordered, coords_reordered[[0]]]
+
+    reordered_curve = PlaneCurve(coords_reordered, curve.param)
     return reordered_curve
