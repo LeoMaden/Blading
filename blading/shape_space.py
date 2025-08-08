@@ -1,4 +1,6 @@
 import numpy as np
+from scipy.interpolate import interp1d
+from scipy.interpolate import make_interp_spline
 
 
 def value(x, z, zT):
@@ -29,10 +31,10 @@ def value(x, z, zT):
     if np.any(valid):
         result[valid] = (z[valid] - x[valid] * zT) / denom[valid]
 
-    # Use interpolation to fill invalid points
-    # np.interp uses nearest neighbour extrapolation
+    # Use linear extrapolation with a linear spline (k=1) for invalid points
     if np.any(~valid) and np.sum(valid) >= 2:
-        result[~valid] = np.interp(x[~valid], x[valid], result[valid])
+        spline = make_interp_spline(x[valid], result[valid], k=1)
+        result[~valid] = spline(x[~valid])
 
     return result
 
