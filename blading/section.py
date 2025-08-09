@@ -3,9 +3,9 @@ from enum import Enum
 from .thickness import Thickness, ThicknessParams, create_thickness
 from .camber import Camber, CamberParams, create_camber
 from .plotting import create_multi_view_plot
-from geometry.curves import PlaneCurve
+from geometry.curves import PlaneCurve, SpaceCurve
 import numpy as np
-from numpy.typing import NDArray
+from numpy.typing import NDArray, ArrayLike
 from matplotlib.patches import Circle as mplCircle
 
 
@@ -162,6 +162,25 @@ class Section:
         """Check if the thickness is parameterized."""
         return self.thickness_params is not None
 
+    @property
+    def chord(self) -> float:
+        """Get the chord length of the section."""
+        return self.camber.chord
+
+    @property
+    def axial_chord(self) -> float:
+        m_LE = self.camber.line.start()[0]
+        m_TE = self.camber.line.end()[0]
+
+        # 2D section, axial chord is meridional extent
+        if self.stream_line is None:
+            return m_TE - m_LE
+
+        # 3D section: need to project onto the stream line
+        x_LE = self.stream_line.interpolate([m_LE]).coords[0, 0]
+        x_TE = self.stream_line.interpolate([m_TE]).coords[0, 0]
+        return x_TE - x_LE
+
     def upper_curve(self) -> PlaneCurve:
         cl = self.camber.line.coords
         thick = self._calc_signed_thickness()
@@ -195,6 +214,25 @@ class Section:
                 return self.camber.line.end()
             case ReferencePoint.Centroid:
                 return self._calc_centroid_coords()
+
+    def b2b_to_polar(self, curve: PlaneCurve) -> SpaceCurve:
+        """Convert a 2D curve in blade-to-blade coordinates (m, c) to a 3D curve
+        in cylindrical polar coordinates (x, r, t).
+
+        Requires that a stream line is defined for the section.
+        """
+        if self.stream_line is None:
+            raise ValueError(
+                "Stream line must be defined to convert to polar coordinates"
+            )
+
+        m = curve.x
+        c = curve.y
+        xr = self.stream_line.interpolate(m)
+        x, r = xr.x, xr.y
+        t = c / r  # c is defined as r * t
+        coords = np.c_[x, r, t]
+        return SpaceCurve.new_unit_speed(coords)
 
     def _calc_signed_thickness(self) -> NDArray:
         normal = self.camber.line.signed_normal().coords
