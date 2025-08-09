@@ -1474,6 +1474,103 @@ class ApproximateCamberResult:
             show_closeups=show_closeups,
         )
 
+    def plot_summary(self):
+        """
+        Plot summary based on the furthest successful stage of the approximation process.
+
+        Returns
+        -------
+        Any
+            The plot result from the most advanced available stage.
+        """
+        # If success, plot the final section
+        if self.success and self.section is not None:
+            return self.section.plot()
+
+        # If not, plot final iteration result, if iteration loop result is available
+        if (
+            self.iteration_loop_result is not None
+            and self.iteration_loop_result.final_iteration is not None
+        ):
+            return self.iteration_loop_result.final_iteration.plot()
+
+        # If not, plot initial camber and thickness, if available
+        if self.initial_camber is not None:
+            return self.plot_initial_camber()
+
+        # If not, plot initial extension result, if available
+        if self.initial_extension_result is not None:
+            return self.initial_extension_result.plot()
+
+        # If not, plot split result summary
+        return self.plot_split_summary()
+
+    def __str__(self):
+        """
+        Return a human-readable summary of the approximation result.
+
+        Returns
+        -------
+        str
+            Formatted summary string showing the status and key metrics.
+        """
+        lines = ["ApproximateCamberResult Summary:"]
+        lines.append("=" * 35)
+
+        # Overall status
+        status = "SUCCESS" if self.success else "FAILED"
+        lines.append(f"Status: {status}")
+
+        if not self.success and self.error_message:
+            lines.append(f"Error: {self.error_message}")
+
+        # Section splitting stage
+        split_status = "SUCCESS" if self.split_result.success else "FAILED"
+        lines.append(f"Section splitting: {split_status}")
+        if not self.split_result.success:
+            lines.append(f"  - Error: {self.split_result.error_message}")
+        else:
+            lines.append(f"  - Found {len(self.split_result.segments)} segments")
+
+        # Initial extension stage
+        if self.initial_extension_result is not None:
+            ext_status = (
+                "SUCCESS" if self.initial_extension_result.success else "FAILED"
+            )
+            lines.append(f"Initial camber extension: {ext_status}")
+            if not self.initial_extension_result.success:
+                lines.append(
+                    f"  - Error: {self.initial_extension_result.error_message}"
+                )
+
+        # Initial camber/thickness stage
+        if self.initial_camber is not None and self.initial_thickness is not None:
+            chord = self.initial_camber.chord
+            max_thickness = max(self.initial_thickness.t)
+            lines.append(
+                f"Initial camber created: chord={chord:.4f}, max_thickness={max_thickness:.4f}"
+            )
+
+        # Iteration loop stage
+        if self.iteration_loop_result is not None:
+            loop_result = self.iteration_loop_result
+            loop_status = "CONVERGED" if loop_result.success else "FAILED"
+            lines.append(f"Iteration loop: {loop_status}")
+            lines.append(f"  - Iterations: {loop_result.iterations}")
+            lines.append(f"  - Final delta: {loop_result.final_delta:.2e}")
+            if not loop_result.success:
+                lines.append(f"  - Error: {loop_result.error_message}")
+
+        # Final section stage
+        if self.section is not None:
+            final_chord = self.section.camber.chord
+            final_max_thickness = max(self.section.thickness.t)
+            lines.append(
+                f"Final section: chord={final_chord:.4f}, max_thickness={final_max_thickness:.4f}"
+            )
+
+        return "\n".join(lines)
+
 
 class CamberApproximationError(Exception):
     """Custom exception for errors during camber approximation."""
