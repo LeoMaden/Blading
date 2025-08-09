@@ -336,8 +336,8 @@ def fit_camber(camber: Camber) -> FitCamberResult:
     constraints = [
         gt_zero(lambda x: x[0]),  # ss_turning_frac > 0
         gt_zero(lambda x: 1 - x[0]),  # ss_turning_frac < 1
-        gt_zero(lambda x: x[1]),  # ss_chord_frac > 0
-        gt_zero(lambda x: 1 - x[1]),  # ss_chord_frac < 1
+        gt_zero(lambda x: x[1] - 0.2),  # ss_chord_frac > 0.2
+        gt_zero(lambda x: 0.8 - x[1]),  # ss_chord_frac < 0.8
     ]
 
     result = minimize(objective, x0, constraints=constraints)
