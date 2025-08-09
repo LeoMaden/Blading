@@ -1,3 +1,4 @@
+from functools import cached_property
 from typing import Literal
 import matplotlib.pyplot as plt
 from dataclasses import dataclass
@@ -9,6 +10,80 @@ from scipy.interpolate import (
     BSpline,
 )
 from scipy.optimize import minimize
+
+
+################################################################################
+######################### Main camber data type ################################
+################################################################################
+
+
+@dataclass(frozen=True)
+class Camber:
+    line: PlaneCurve
+
+    def __post_init__(self):
+        # Ensure the curve has constant speed (arc length) parameterisation and
+        # is normalised.
+        line = self.line
+        if not line.is_unit():
+            line = line.reparameterise_unit()
+        if not line.is_normalised():
+            line = line.normalise()
+
+        object.__setattr__(self, "line", line)
+
+    @property
+    def s(self) -> NDArray:
+        return self.line.param  # This is correct since the curve is normalised.
+
+    @property
+    def non_dim(self) -> NDArray:
+        """Non-dimensional camber line."""
+        angle = self.line.turning_angle()
+        return (angle - angle[0]) / (angle[-1] - angle[0])
+
+    @cached_property
+    def angle(self) -> NDArray:
+        """Turning angle of the camber line."""
+        return self.line.turning_angle()
+
+    @property
+    def angle_LE(self) -> float:
+        """Leading edge angle of the camber line."""
+        return self.angle[0]
+
+    @property
+    def angle_TE(self) -> float:
+        """Trailing edge angle of the camber line."""
+        return self.angle[-1]
+
+    @property
+    def chord(self) -> float:
+        """Chord length of the camber line."""
+        return self.line.length()
+
+    def plot_non_dim(self, ax=None, *plot_args, **plot_kwargs):
+        if ax is None:
+            _, ax = plt.subplots()
+        ax.plot(self.s, self.non_dim, *plot_args, **plot_kwargs)
+        ax.set_xlabel("Normalised arc length")
+        ax.set_ylabel("Non-dimensional camber")
+        ax.grid(True)
+        return ax
+
+    def plot_angle(self, ax=None, *plot_args, **plot_kwargs):
+        if ax is None:
+            _, ax = plt.subplots()
+        ax.plot(self.s, np.degrees(self.angle), *plot_args, **plot_kwargs)
+        ax.set_xlabel("Normalised arc length")
+        ax.set_ylabel("Turning angle (degrees)")
+        ax.grid(True)
+        return ax
+
+
+################################################################################
+###################### Parameters defining camber line #########################
+################################################################################
 
 
 @dataclass
@@ -41,65 +116,20 @@ class CamberParams:
     non_dim: CamberNonDimParams
 
 
+################################################################################
+################## Non-dimensional camber creation from params #################
+################################################################################
+
+
 @dataclass
-class NonDimCamberSplineResult:
+class NonDimCamberResult:
     spline: BSpline
     t_star: NDArray
     coefs: NDArray
 
-
-@dataclass
-class Camber:
-    line: PlaneCurve
-
-    def __post_init__(self):
-        # Ensure the curve has constant speed (arc length) parameterisation and
-        # is normalised.
-        line = self.line
-        if not line.is_unit():
-            line = line.reparameterise_unit()
-        if not line.is_normalised():
-            line = line.normalise()
-
-        self.line = line
-
-    @property
-    def s(self) -> NDArray:
-        return self.line.param  # This is correct since the curve is normalised.
-
-    @property
-    def non_dim(self) -> NDArray:
-        """Non-dimensional camber line."""
-        angle = self.line.turning_angle()
-        return (angle - angle[0]) / (angle[-1] - angle[0])
-
-    @property
-    def angle(self) -> NDArray:
-        """Turning angle of the camber line."""
-        return self.line.turning_angle()
-
-    @property
-    def chord(self) -> float:
-        """Chord length of the camber line."""
-        return self.line.length()
-
-    def plot_non_dim(self, ax=None, *plot_args, **plot_kwargs):
-        if ax is None:
-            _, ax = plt.subplots()
-        ax.plot(self.s, self.non_dim, *plot_args, **plot_kwargs)
-        ax.set_xlabel("Normalised arc length")
-        ax.set_ylabel("Non-dimensional camber")
-        ax.grid(True)
-        return ax
-
-    def plot_angle(self, ax=None, *plot_args, **plot_kwargs):
-        if ax is None:
-            _, ax = plt.subplots()
-        ax.plot(self.s, np.degrees(self.angle), *plot_args, **plot_kwargs)
-        ax.set_xlabel("Normalised arc length")
-        ax.set_ylabel("Turning angle (degrees)")
-        ax.grid(True)
-        return ax
+    def eval(self, s: NDArray) -> NDArray:
+        """Evaluate the non-dimensional camber spline at given s values."""
+        return self.spline(s)
 
 
 def _dca_camber_spline(ss_turning: float, ss_chord: float) -> BSpline:
@@ -110,77 +140,7 @@ def _dca_camber_spline(ss_turning: float, ss_chord: float) -> BSpline:
     )
 
 
-##################################################
-
-
-@dataclass
-class FitCamberResult:
-    non_dim_spline: BSpline
-    params: CamberParams
-    t_star: NDArray
-    coefs: NDArray
-
-    def create_camber_line(self, s: NDArray) -> PlaneCurve:
-        non_dim = self.non_dim_spline(s)
-        return create_camber(non_dim, s, self.params.angles, self.params.stacking)
-
-    def plot_non_dim_spline(
-        self,
-        s: NDArray | None = None,
-        ax=None,
-        show_control_points: bool = True,
-        *plot_args,
-        **plot_kwargs,
-    ):
-        if s is None:
-            s = np.linspace(0, 1, 100)
-        if ax is None:
-            _, ax = plt.subplots()
-
-        non_dim = self.non_dim_spline(s)
-        ax.plot(s, non_dim, *plot_args, **plot_kwargs)
-
-        if show_control_points:
-            ax.plot(
-                self.t_star[[0, 3, 6]],
-                self.coefs[[0, 3, 6]],
-                "go--",
-                markersize=8,
-                label="DCA Control points",
-            )
-            ax.plot(
-                self.t_star[[1, 2, 4, 5]],
-                self.coefs[[1, 2, 4, 5]],
-                "bo",
-                markersize=4,
-                label="Camber style control points",
-            )
-
-        ax.set_xlabel("Normalised arc length")
-        ax.set_ylabel("Non-dimensional camber")
-        ax.grid(True)
-        if show_control_points:
-            ax.legend()
-        return ax
-
-    def plot_camber_comparison(self, original_camber: Camber, ax=None):
-        if ax is None:
-            _, ax = plt.subplots()
-
-        original_camber.plot_non_dim(ax, "k-", label="Original")
-        self.plot_non_dim_spline(
-            original_camber.s,
-            ax,
-            show_control_points=True,
-            label="Fitted",
-            linestyle="--",
-            color="r",
-        )
-        ax.legend()
-        return ax
-
-
-def create_non_dim_camber_spline(p: CamberNonDimParams) -> NonDimCamberSplineResult:
+def create_non_dim_camber_spline(p: CamberNonDimParams) -> NonDimCamberResult:
     # Set position of interior knots.
     xj = p.ss_chord_frac
     t6 = (3 * xj - p.beta) / (2 + p.alpha - p.beta)
@@ -211,39 +171,121 @@ def create_non_dim_camber_spline(p: CamberNonDimParams) -> NonDimCamberSplineRes
 
     spline = BSpline(knots, coefs, k=3)
 
-    return NonDimCamberSplineResult(spline, t_star, coefs)
+    return NonDimCamberResult(spline, t_star, coefs)
 
 
-def create_camber(
-    non_dim: NDArray,
-    s: NDArray,
-    angles: CamberMetalAngles,
-    stacking: CamberStackingParams,
-) -> PlaneCurve:
-    angle = non_dim * (angles.TE - angles.LE) + angles.LE
+################################################################################
+###################### Dimensional camber creation #############################
+################################################################################
+
+
+@dataclass
+class CamberResult:
+    non_dim_result: NonDimCamberResult
+    params: CamberParams
+
+    def eval(self, s: NDArray) -> Camber:
+        """Evaluate the camber line at given s values."""
+        non_dim = self.non_dim_result.eval(s)
+        angle = _angle_from_non_dim(non_dim, self.params.angles)
+        return _camber_from_angle(angle, s, self.params.stacking)
+
+
+def _angle_from_non_dim(non_dim: NDArray, angles: CamberMetalAngles) -> NDArray:
+    """Convert non-dimensional camber to angle."""
+    return non_dim * (angles.TE - angles.LE) + angles.LE
+
+
+def _camber_from_angle(
+    angle: NDArray, s: NDArray, stacking: CamberStackingParams
+) -> Camber:
+    """Create a camber line from angle and stacking parameters."""
     camber_line = PlaneCurve.from_angle(angle, s)
     camber_line *= stacking.chord
     # Apply offsets by translating the curve
     translated_points = camber_line.coords.copy()
-    translated_points[0] += stacking.x_offset
-    translated_points[1] += stacking.y_offset
-    return PlaneCurve(translated_points, camber_line.param)
+    translated_points[:, 0] += stacking.x_offset
+    translated_points[:, 1] += stacking.y_offset
+    translated_line = PlaneCurve(translated_points, camber_line.param)
+    return Camber(translated_line)
 
 
-def fit_camber(camber: Camber, plot_intermediate: bool = False) -> FitCamberResult:
+@dataclass
+class FitCamberResult:
+    result: CamberResult
+    original: Camber
+
+    def compare_non_dim(self, ax=None):
+        """Compare the original and fitted non-dimensional camber distributions."""
+        if ax is None:
+            _, ax = plt.subplots()
+
+        # Plot original using Camber's plotting method
+        self.original.plot_non_dim(ax, "-", label="Original", color="blue")
+
+        # Plot fitted non-dimensional camber directly from BSpline
+        fitted_non_dim = self.result.non_dim_result.eval(self.original.s)
+        ax.plot(self.original.s, fitted_non_dim, "--", label="Fitted", color="red")
+
+        ax.legend()
+        ax.set_title("Non-dimensional Camber Comparison")
+
+        return ax
+
+    def compare_lines(self, ax=None):
+        """Compare the original and fitted camber lines."""
+        if ax is None:
+            _, ax = plt.subplots()
+
+        # Plot original camber line
+        self.original.line.plot(ax, "-", label="Original", color="blue")
+
+        # Get and plot fitted camber line
+        fitted_camber = self.result.eval(self.original.s)
+        fitted_camber.line.plot(ax, "--", label="Fitted", color="red")
+
+        ax.axis("equal")
+        ax.legend()
+
+        # Get LE and TE angles for title
+        le_angle = np.degrees(self.result.params.angles.LE)
+        te_angle = np.degrees(self.result.params.angles.TE)
+        turning_angle = le_angle - te_angle
+        ax.set_title(
+            f"Camber Line Comparison (LE: {le_angle:.1f}°, TE: {te_angle:.1f}°, Δ: {turning_angle:.1f}°)"
+        )
+        ax.grid(True, alpha=0.3)
+
+        return ax
+
+    def compare_summary(self):
+        """Compare the original and fitted non-dimensional camber and camber lines
+        side-by-side.
+        """
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+
+        # Compare non-dimensional camber
+        self.compare_non_dim(ax=ax1)
+
+        # Compare camber lines
+        self.compare_lines(ax=ax2)
+
+        plt.tight_layout()
+        return fig, (ax1, ax2)
+
+
+def fit_camber(camber: Camber) -> FitCamberResult:
     s = camber.s
     non_dim = camber.non_dim
-    chord = camber.line.length()
-    angle = camber.angle
     LE_coords = camber.line.start()
 
     x0 = [0.5, 0.5, 1, 1, 1, 1]
 
     def create_params(x) -> CamberParams:
         return CamberParams(
-            angles=CamberMetalAngles(LE=angle[0], TE=angle[-1]),
+            angles=CamberMetalAngles(LE=camber.angle_LE, TE=camber.angle_TE),
             stacking=CamberStackingParams(
-                chord=chord, x_offset=LE_coords[0], y_offset=LE_coords[1]
+                chord=camber.chord, x_offset=LE_coords[0], y_offset=LE_coords[1]
             ),
             non_dim=CamberNonDimParams(
                 ss_turning_frac=x[0],
@@ -267,13 +309,6 @@ def fit_camber(camber: Camber, plot_intermediate: bool = False) -> FitCamberResu
 
     final_params = create_params(result.x)
     spline_result = create_non_dim_camber_spline(final_params.non_dim)
-    camber_result = FitCamberResult(
-        spline_result.spline, final_params, spline_result.t_star, spline_result.coefs
-    )
+    camber_result = CamberResult(spline_result, final_params)
 
-    if plot_intermediate:
-        camber_result.plot_camber_comparison(camber)
-        plt.title("Camber Fitting Results")
-        plt.show()
-
-    return camber_result
+    return FitCamberResult(camber_result, camber)
