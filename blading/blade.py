@@ -188,6 +188,15 @@ class Blade:
             add_origin=True,
         )
 
+    def plot_s_max_t(self, ax=None):
+        """Plot the maximum thickness distribution along the span using s coordinates."""
+        funcs_labels = [
+            (lambda s: s.thickness_params.measured.s_max_t, "Pos. Max. thickness")
+        ]
+        return self._plot_spanwise_params(
+            ax, funcs_labels, "Spanwise Position of Maximum Thickness", "s"
+        )
+
     def _plot_spanwise_params(
         self,
         ax,
