@@ -100,6 +100,12 @@ class Blade:
         span = (r_ref - r_min) / (r_max - r_min)
         return span
 
+    def get_nearest_section(self, span: float) -> Section:
+        """Get the section nearest to the given spanwise location."""
+        span_values = self.get_span()
+        idx = np.argmin(np.abs(span_values - span))
+        return self.sections[idx]
+
     def plot_meridional(self, ax=None):
         if ax is None:
             _, ax = plt.subplots(figsize=(10, 8))
