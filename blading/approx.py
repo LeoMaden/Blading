@@ -1,6 +1,5 @@
 from typing import Protocol
 import matplotlib.pyplot as plt
-from geometry.curves import plot_plane_curve
 from numpy.typing import NDArray
 import numpy as np
 from geometry.curves import PlaneCurve

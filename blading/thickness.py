@@ -10,7 +10,6 @@ from circle_fit import taubinSVD
 from numpy.polynomial import Polynomial
 from typing import Callable, Optional
 from scipy.optimize import minimize, fmin, fsolve
-from geometry.curves import plot_plane_curve
 
 
 @dataclass(frozen=True)
