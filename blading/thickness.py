@@ -573,6 +573,9 @@ class FitThicknessResult:
         thickness_fit = self.result.eval(self.original.s)
         thickness_fit.plot_shape_space(ax, "r-", label="Fitted spline")
 
+        # Plot original shape space representation
+        self.original.plot_shape_space(ax, "k-", alpha=0.5, label="Original")
+
         # Un-stretch and plot control points
         s_control_stretched = result.ss_control_points[:, 0]
         stretch_func = self.result.stretch_func
@@ -581,16 +584,7 @@ class FitThicknessResult:
             lambda s: stretch_func(s) - s_control_stretched, s_control_stretched
         )  # type: ignore
 
-        ax.plot(
-            s_control,
-            result.ss_control_points[:, 1],
-            "bo",
-            markersize=8,
-            label="Control points",
-        )
-
-        # Plot original shape space representation
-        self.original.plot_shape_space(ax, "k-", alpha=0.7, label="Original")
+        ax.plot(s_control, result.ss_control_points[:, 1], "bo", label="Control points")
 
         ax.set_xlabel("Normalised arc length")
         ax.set_ylabel("Shape space value")
@@ -605,12 +599,12 @@ class FitThicknessResult:
         if ax is None:
             _, ax = plt.subplots()
 
-        # Plot original thickness
-        self.original.plot(ax, "k-", label="Original", alpha=0.7)
-
         # Plot fitted thickness
         thickness_fit = self.result.eval(self.original.s)
         thickness_fit.plot(ax, "r-", label="Fitted")
+
+        # Plot original thickness
+        self.original.plot(ax, "k-", label="Original", alpha=0.5)
 
         ax.set_xlabel("Normalised arc length")
         ax.set_ylabel("Thickness")
