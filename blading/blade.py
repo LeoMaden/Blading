@@ -166,21 +166,26 @@ class Blade:
         ax.legend()
         return ax
 
-    def plot_chord(self, ax=None):
+    def plot_chord(self, ax=None, include_axial_chord: bool = False):
         if ax is None:
             _, ax = plt.subplots()
 
         span = self.get_span()
         chord = self.get_spanwise_value(lambda s: s.camber.chord)
+        ax.plot(chord, span, label="Chord")
+
+        if include_axial_chord:
+            axial_chord = self.get_spanwise_value(lambda s: s.axial_chord)
+            ax.plot(axial_chord, span, label="Axial Chord")
 
         ax.set_title("Spanwise Chord Distribution")
-        ax.plot(chord, span, label="Chord")
         ax.set_xlabel("Chord length")
         ax.set_ylabel(
             f"Spanwise location at {self.reference_point.display_name.lower()}"
         )
         ax.grid()
-        ax.legend()
+        if include_axial_chord:
+            ax.legend()
         return ax
 
     def _check_reference_point_consistency(self) -> bool:
