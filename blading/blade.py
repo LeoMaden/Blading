@@ -141,55 +141,117 @@ class Blade:
     def plot_angles(
         self, ax=None, show_turning: bool = True, show_stagger: bool = True
     ):
+        funcs_labels = [
+            (lambda s: np.degrees(s.camber_params.angles.LE), "Leading edge"),
+            (lambda s: np.degrees(s.camber_params.angles.TE), "Trailing edge"),
+        ]
+        if show_turning:
+            funcs_labels.append(
+                (lambda s: np.degrees(s.camber_params.angles.delta), "Turning angle")
+            )
+        if show_stagger:
+            funcs_labels.append((lambda s: np.degrees(s.stagger), "Stagger angle"))
+
+        return self._plot_spanwise_params(
+            ax,
+            funcs_labels,
+            "Spanwise Metal Angles",
+            "Angle (degrees)",
+            add_origin=True,
+        )
+
+    def plot_chord(self, ax=None, include_axial_chord: bool = False):
+        funcs_labels = [(lambda s: s.camber.chord, "Chord")]
+
+        if include_axial_chord:
+            funcs_labels.append((lambda s: s.axial_chord, "Axial Chord"))
+
+        return self._plot_spanwise_params(
+            ax, funcs_labels, "Spanwise Chord Distribution", "Chord length"
+        )
+
+    def plot_max_t(self, ax=None):
+        """Plot the maximum thickness distribution along the span."""
+        funcs_labels = [(lambda s: s.thickness_params.measured.max_t, "Max Thickness")]
+        return self._plot_spanwise_params(
+            ax, funcs_labels, "Spanwise Maximum Thickness", "Thickness"
+        )
+
+    def plot_LE_radius(self, ax=None):
+        """Plot the leading edge radius distribution along the span."""
+        funcs_labels = [(lambda s: s.thickness_params.measured.radius_LE, "LE Radius")]
+        return self._plot_spanwise_params(
+            ax,
+            funcs_labels,
+            "Spanwise Leading Edge Radius",
+            "Radius",
+            add_origin=True,
+        )
+
+    def _plot_spanwise_params(
+        self,
+        ax,
+        param_funcs_labels_kwargs,
+        title: str,
+        xlabel: str,
+        add_origin: bool = False,
+    ):
+        """Helper method to plot spanwise parameter distributions.
+
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes or None
+            Matplotlib axes to plot on. If None, creates new subplot.
+        param_funcs_labels_kwargs : list of tuple
+            List of (function, label, plot_args, plot_kwargs) tuples where:
+            - function: callable that takes Section and returns parameter value
+            - label: str, legend label for this parameter
+            - plot_args: tuple, positional arguments for ax.plot (optional, defaults to ())
+            - plot_kwargs: dict, keyword arguments for ax.plot (optional, defaults to {})
+        title : str
+            Plot title.
+        xlabel : str
+            X-axis label.
+        add_origin : bool, optional
+            Whether to add origin point for reference, by default False.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The axes object with the plot.
+        """
         if ax is None:
             _, ax = plt.subplots()
 
         span = self.get_span()
 
-        funcs_labels = [
-            (lambda s: s.camber_params.angles.LE, "Leading edge"),
-            (lambda s: s.camber_params.angles.TE, "Trailing edge"),
-        ]
-        if show_turning:
-            funcs_labels.append(
-                (lambda s: s.camber_params.angles.delta, "Turning angle")
-            )
-        if show_stagger:
-            funcs_labels.append((lambda s: s.stagger, "Stagger angle"))
+        ax.set_title(title)
+        for item in param_funcs_labels_kwargs:
+            if len(item) == 2:
+                f, label = item
+                plot_args, plot_kwargs = (), {}
+            elif len(item) == 3:
+                f, label, plot_args = item
+                plot_kwargs = {}
+            elif len(item) == 4:
+                f, label, plot_args, plot_kwargs = item
+            else:
+                raise ValueError(
+                    "Each item must be (func, label) or (func, label, args) or (func, label, args, kwargs)"
+                )
 
-        ax.set_title("Spanwise Metal Angles")
-        for f, label in funcs_labels:
-            angle = np.degrees(self.get_spanwise_value(f))
-            ax.plot(angle, span, label=label)
-        ax.plot([0], [0], "k-")  # Ensure origin is visible
-        ax.set_xlabel("Angle (degrees)")
+            param_values = self.get_spanwise_value(f)
+            ax.plot(param_values, span, *plot_args, label=label, **plot_kwargs)
+
+        if add_origin:
+            ax.plot([0], [0], "k-")
+
+        ax.set_xlabel(xlabel)
         ax.set_ylabel(
             f"Spanwise location at {self.reference_point.display_name.lower()}"
         )
         ax.grid()
         ax.legend()
-        return ax
-
-    def plot_chord(self, ax=None, include_axial_chord: bool = False):
-        if ax is None:
-            _, ax = plt.subplots()
-
-        span = self.get_span()
-        chord = self.get_spanwise_value(lambda s: s.camber.chord)
-        ax.plot(chord, span, label="Chord")
-
-        if include_axial_chord:
-            axial_chord = self.get_spanwise_value(lambda s: s.axial_chord)
-            ax.plot(axial_chord, span, label="Axial Chord")
-
-        ax.set_title("Spanwise Chord Distribution")
-        ax.set_xlabel("Chord length")
-        ax.set_ylabel(
-            f"Spanwise location at {self.reference_point.display_name.lower()}"
-        )
-        ax.grid()
-        if include_axial_chord:
-            ax.legend()
         return ax
 
     def _check_reference_point_consistency(self) -> bool:
