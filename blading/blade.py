@@ -160,6 +160,23 @@ class Blade:
         ax.legend()
         return ax
 
+    def plot_chord(self, ax=None):
+        if ax is None:
+            _, ax = plt.subplots()
+
+        span = self.get_span()
+        chord = self.get_spanwise_value(lambda s: s.camber.chord)
+
+        ax.set_title("Spanwise Chord Distribution")
+        ax.plot(chord, span, label="Chord")
+        ax.set_xlabel("Chord length")
+        ax.set_ylabel(
+            f"Spanwise location at {self.reference_point.display_name.lower()}"
+        )
+        ax.grid()
+        ax.legend()
+        return ax
+
     def _check_reference_point_consistency(self) -> bool:
         """Check if all sections have the same reference point."""
         first_ref_point = self.sections[0].reference_point
