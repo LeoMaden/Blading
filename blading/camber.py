@@ -63,6 +63,15 @@ class Camber:
         """Chord length of the camber line."""
         return self.line.length()
 
+    @property
+    def stagger(self) -> float:
+        """Stagger angle of the camber line."""
+        start = self.line.start()
+        end = self.line.end()
+        delta = end - start
+        dy, dx = delta[1], delta[0]
+        return np.arctan2(dy, dx)
+
     def interpolate(self, s: NDArray) -> "Camber":
         """Interpolate the camber line at given s values."""
         new_line = self.line.interpolate(s)

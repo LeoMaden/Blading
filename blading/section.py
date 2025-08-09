@@ -181,6 +181,11 @@ class Section:
         x_TE = self.stream_line.interpolate([m_TE]).coords[0, 0]
         return x_TE - x_LE
 
+    @property
+    def stagger(self) -> float:
+        """Get the stagger angle of the section."""
+        return self.camber.stagger
+
     def upper_curve(self) -> PlaneCurve:
         cl = self.camber.line.coords
         thick = self._calc_signed_thickness()

@@ -138,7 +138,9 @@ class Blade:
         ax.axis("equal")
         ax.legend()
 
-    def plot_metal_angles(self, ax=None, show_turning: bool = True):
+    def plot_angles(
+        self, ax=None, show_turning: bool = True, show_stagger: bool = True
+    ):
         if ax is None:
             _, ax = plt.subplots()
 
@@ -152,6 +154,8 @@ class Blade:
             funcs_labels.append(
                 (lambda s: s.camber_params.angles.delta, "Turning angle")
             )
+        if show_stagger:
+            funcs_labels.append((lambda s: s.stagger, "Stagger angle"))
 
         ax.set_title("Spanwise Metal Angles")
         for f, label in funcs_labels:
