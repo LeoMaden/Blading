@@ -104,6 +104,11 @@ class CamberMetalAngles:
     LE: float  # Leading edge angle
     TE: float  # Trailing edge angle
 
+    @property
+    def delta(self) -> float:
+        """Turning angle from LE to TE. Positive is turning towards the axial direction."""
+        return self.LE - self.TE
+
 
 @dataclass
 class CamberNonDimParams:
