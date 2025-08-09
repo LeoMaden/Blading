@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from .thickness import Thickness, ThicknessParams, create_thickness
 from .camber import Camber, CamberParams
+from .plotting import create_multi_view_plot
 from geometry.curves import PlaneCurve
 import numpy as np
 from numpy.typing import NDArray
@@ -147,157 +148,219 @@ class Section:
 
     def plot(
         self,
-        ax=None,
         show_reference_point: bool = True,
         show_camber_line: bool = True,
         show_LE_circle: bool = True,
+        show_closeups: bool = True,
     ):
         """Plot the blade section showing upper/lower curves, camber line, and reference point.
 
-        Args:
-            ax: Matplotlib axes object (optional)
-            show_reference_point: Whether to show the reference point marker
-            show_camber_line: Whether to show the camber line
+        Parameters
+        ----------
+        show_reference_point : bool, optional
+            Whether to show the reference point marker. Default is True.
+        show_camber_line : bool, optional
+            Whether to show the camber line. Default is True.
+        show_LE_circle : bool, optional
+            Whether to show the leading edge circle. Default is True.
+        show_closeups : bool, optional
+            Whether to show close-up views of LE and TE. Default is True.
 
-        Returns:
-            Matplotlib axes object
+        Returns
+        -------
+        tuple
+            Tuple from create_multi_view_plot containing figure and axes objects.
         """
-        import matplotlib.pyplot as plt
-
-        if ax is None:
-            _, ax = plt.subplots(figsize=(10, 6))
-
+        # Use multi-view plotting
         upper_curve, lower_curve = self.curves()
 
-        # Plot upper and lower curves using PlaneCurve's plot method
-        upper_curve.plot(ax=ax, color="b", linewidth=2, label="Upper surface")
-        lower_curve.plot(ax=ax, color="r", linewidth=2, label="Lower surface")
+        # Define plot functions for multi-view plotting
+        plot_functions = [
+            lambda ax: upper_curve.plot(
+                ax=ax, color="b", linewidth=2, label="Upper surface"
+            ),
+            lambda ax: lower_curve.plot(
+                ax=ax, color="r", linewidth=2, label="Lower surface"
+            ),
+        ]
 
-        # Plot camber line if requested
+        # Add camber line if requested
         if show_camber_line:
-            self.camber.line.plot(
-                ax=ax,
-                color="k",
-                linestyle="--",
-                linewidth=1,
-                alpha=0.7,
-                label="Camber line",
+            plot_functions.append(
+                lambda ax: self.camber.line.plot(
+                    ax=ax,
+                    color="k",
+                    linestyle="--",
+                    linewidth=1,
+                    alpha=0.7,
+                    label="Camber line",
+                )
             )
 
-        # Plot reference point if requested
+        # Add reference point if requested
         if show_reference_point:
             ref_coords = self.get_reference_point_coords()
             ref_name = self.reference_point.display_name
-            ax.plot(
-                ref_coords[0],
-                ref_coords[1],
-                "go",
-                markersize=8,
-                label=f"Reference point ({ref_name})",
+            plot_functions.append(
+                lambda ax: ax.plot(
+                    ref_coords[0],
+                    ref_coords[1],
+                    "go",
+                    markersize=8,
+                    label=f"Reference point ({ref_name})",
+                )
             )
 
-        # Plot leading edge circle if requested
+        # Add leading edge circle if requested
         if show_LE_circle:
             sc, r = self.thickness.fit_LE_circle()
             centre = self.camber.line.interpolate([sc]).coords
             xc, yc = centre[0, 0], centre[0, 1]
-            circle = mplCircle(
-                (xc, yc),
-                r,
-                color="orange",
-                fill=False,
-                linestyle="--",
-                linewidth=1.5,
-                label="Leading edge circle",
-            )
-            ax.add_artist(circle)
 
-        # Formatting
-        ax.set_xlabel("X coordinate")
-        ax.set_ylabel("Y coordinate")
-        ax.set_title("Blade Section")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        ax.axis("equal")
+            def add_circle(ax):
+                circle = mplCircle(
+                    (xc, yc),
+                    r,
+                    color="orange",
+                    fill=False,
+                    linestyle="--",
+                    linewidth=1.5,
+                    label="Leading edge circle",
+                )
+                ax.add_artist(circle)
 
-        return ax
+            plot_functions.append(add_circle)
 
-    def plot_comparison(self, other, ax=None, show_reference_points: bool = True):
-        """Plot comparison between this section and another Section or SectionPerimiter.
+        # Add axis formatting function
+        def format_axes(ax):
+            ax.set_xlabel("X coordinate")
+            ax.set_ylabel("Y coordinate")
+            ax.grid(True, alpha=0.3)
 
-        Args:
-            other: Another Section or SectionPerimiter object to compare with
-            ax: Matplotlib axes object (optional)
-            show_reference_points: Whether to show reference points for Section objects
+        plot_functions.append(format_axes)
 
-        Returns:
-            Matplotlib axes object
-        """
-        import matplotlib.pyplot as plt
-        from .section_perimiter import SectionPerimiter
-
-        if ax is None:
-            _, ax = plt.subplots(figsize=(12, 8))
-
-        # Plot this section
-        self.plot(
-            ax=ax, show_reference_point=show_reference_points, show_camber_line=True
+        return create_multi_view_plot(
+            plot_functions=plot_functions,
+            camber_line=self.camber.line,
+            title="Blade Section",
+            show_closeups=show_closeups,
         )
 
-        # Update labels to distinguish from comparison
-        for line in ax.get_lines():
-            if line.get_label() and not line.get_label().startswith("_"):  # type: ignore
-                line.set_label(f"Original {line.get_label()}")
+    def plot_comparison(
+        self,
+        other,
+        this_name: str = "Original",
+        other_name: str = "Comparison",
+        show_reference_points: bool = True,
+        show_closeups: bool = True,
+    ):
+        """Plot comparison between this section and another Section or SectionPerimiter.
 
-        # Plot the comparison object
+        Parameters
+        ----------
+        other : Section or SectionPerimiter
+            Another Section or SectionPerimiter object to compare with.
+        this_name : str, optional
+            Name to use in labels for this section. Default is "Original".
+        other_name : str, optional
+            Name to use in labels for the other section. Default is "Comparison".
+        show_reference_points : bool, optional
+            Whether to show reference points for Section objects. Default is True.
+        show_closeups : bool, optional
+            Whether to show close-up views of LE and TE. Default is True.
+
+        Returns
+        -------
+        tuple
+            Tuple from create_multi_view_plot containing figure and axes objects.
+        """
+        from .section_perimiter import SectionPerimiter
+
+        # Use multi-view plotting
+        upper_curve, lower_curve = self.curves()
+
+        # Define plot functions starting with this section
+        plot_functions = [
+            lambda ax: upper_curve.plot(
+                ax=ax, color="b", label=f"{this_name} Upper surface"
+            ),
+            lambda ax: lower_curve.plot(
+                ax=ax, color="r", label=f"{this_name} Lower surface"
+            ),
+            lambda ax: self.camber.line.plot(
+                ax=ax,
+                color="k",
+                linestyle="--",
+                alpha=0.7,
+                label=f"{this_name} Camber line",
+            ),
+        ]
+
+        # Add original reference point if requested
+        if show_reference_points:
+            ref_coords = self.get_reference_point_coords()
+            ref_name = self.reference_point.display_name
+            plot_functions.append(
+                lambda ax: ax.plot(
+                    ref_coords[0],
+                    ref_coords[1],
+                    "go",
+                    markersize=8,
+                    label=f"{this_name} Reference point ({ref_name})",
+                )
+            )
+
+        # Add comparison object plotting functions
         if isinstance(other, Section):
             # Plot another Section
-            upper_curve, lower_curve = other.curves()
-            upper_curve.plot(
-                ax=ax,
-                color="orange",
-                linewidth=2,
-                linestyle=":",
-                label="Comparison Upper surface",
-            )
-            lower_curve.plot(
-                ax=ax,
-                color="purple",
-                linewidth=2,
-                linestyle=":",
-                label="Comparison Lower surface",
-            )
-
-            # Plot comparison camber line
-            other.camber.line.plot(
-                ax=ax,
-                color="gray",
-                linestyle="-.",
-                linewidth=1,
-                alpha=0.7,
-                label="Comparison Camber line",
+            other_upper_curve, other_lower_curve = other.curves()
+            plot_functions.extend(
+                [
+                    lambda ax: other_upper_curve.plot(
+                        ax=ax,
+                        color="orange",
+                        linestyle=":",
+                        label=f"{other_name} Upper surface",
+                    ),
+                    lambda ax: other_lower_curve.plot(
+                        ax=ax,
+                        color="purple",
+                        linestyle=":",
+                        label=f"{other_name} Lower surface",
+                    ),
+                    lambda ax: other.camber.line.plot(
+                        ax=ax,
+                        color="gray",
+                        linestyle="-.",
+                        alpha=0.7,
+                        label=f"{other_name} Camber line",
+                    ),
+                ]
             )
 
             # Plot comparison reference point
             if show_reference_points:
-                ref_coords = other.get_reference_point_coords()
-                ref_name = other.reference_point.display_name
-                ax.plot(
-                    ref_coords[0],
-                    ref_coords[1],
-                    "mo",
-                    markersize=8,
-                    label=f"Comparison Reference point ({ref_name})",
+                other_ref_coords = other.get_reference_point_coords()
+                other_ref_name = other.reference_point.display_name
+                plot_functions.append(
+                    lambda ax: ax.plot(
+                        other_ref_coords[0],
+                        other_ref_coords[1],
+                        "mo",
+                        markersize=8,
+                        label=f"{other_name} Reference point ({other_ref_name})",
+                    )
                 )
 
         elif isinstance(other, SectionPerimiter):
             # Plot SectionPerimiter
-            other.curve.plot(
-                ax=ax,
-                color="cyan",
-                linewidth=2,
-                linestyle=":",
-                label="Comparison Perimeter",
+            plot_functions.append(
+                lambda ax: other.curve.plot(
+                    ax=ax,
+                    color="cyan",
+                    linestyle=":",
+                    label=f"{other_name} Perimeter",
+                )
             )
 
         else:
@@ -306,10 +369,15 @@ class Section:
                 "Expected Section or SectionPerimiter."
             )
 
-        # Update plot formatting
-        ax.set_title("Section Comparison")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        ax.axis("equal")
+        # Add axis formatting function
+        def format_axes(ax):
+            ax.grid(True, alpha=0.3)
 
-        return ax
+        plot_functions.append(format_axes)
+
+        return create_multi_view_plot(
+            plot_functions=plot_functions,
+            camber_line=self.camber.line,
+            title="Section Comparison",
+            show_closeups=show_closeups,
+        )
