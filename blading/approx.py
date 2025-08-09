@@ -1330,9 +1330,14 @@ class ApproximateCamberResult:
         # If not, plot split result summary
         return self.plot_split_summary()
 
-    def __str__(self):
+    def get_summary(self, concise: bool = False) -> str:
         """
         Return a human-readable summary of the approximation result.
+
+        Parameters
+        ----------
+        concise : bool, optional
+            If True, return only status and error message. Default is False.
 
         Returns
         -------
@@ -1348,6 +1353,10 @@ class ApproximateCamberResult:
 
         if not self.success and self.error_message:
             lines.append(f"Error: {self.error_message}")
+
+        # Return early if concise output requested
+        if concise:
+            return "\n".join(lines)
 
         # Section splitting stage
         split_status = "SUCCESS" if self.split_result.success else "FAILED"
@@ -1395,6 +1404,14 @@ class ApproximateCamberResult:
             )
 
         return "\n".join(lines)
+
+    def __str__(self) -> str:
+        """
+        Return a string representation of the ApproximateCamberResult.
+
+        This will call get_summary() to provide a detailed overview.
+        """
+        return self.get_summary()
 
 
 class CamberApproximationError(Exception):
