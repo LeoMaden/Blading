@@ -220,12 +220,26 @@ class FitCamberResult:
         if ax is None:
             _, ax = plt.subplots()
 
-        # Plot original using Camber's plotting method
-        self.original.plot_non_dim(ax, "-", label="Original", color="blue")
-
         # Plot fitted non-dimensional camber directly from BSpline
-        fitted_non_dim = self.result.non_dim_result.eval(self.original.s)
-        ax.plot(self.original.s, fitted_non_dim, "--", label="Fitted", color="red")
+        fitted_camber = self.result.eval(self.original.s)
+        fitted_camber.plot_non_dim(ax, "r-", label="Fitted")
+
+        # Plot original using Camber's plotting method
+        self.original.plot_non_dim(ax, "k-", alpha=0.5, label="Original")
+
+        # Plot control points
+        x_control = self.result.non_dim_result.t_star
+        y_control = self.result.non_dim_result.coefs
+        i_dca = [0, 3, 6]
+        i_interior = [1, 2, 4, 5]
+        ax.plot(x_control[i_dca], y_control[i_dca], "bo", label="DCA control")
+        ax.plot(x_control[i_dca], y_control[i_dca], "b--", alpha=0.5)
+        ax.plot(
+            x_control[i_interior],
+            y_control[i_interior],
+            "bx",
+            label="Camber style control",
+        )
 
         ax.legend()
         ax.set_title("Non-dimensional Camber Comparison")
@@ -237,12 +251,12 @@ class FitCamberResult:
         if ax is None:
             _, ax = plt.subplots()
 
-        # Plot original camber line
-        self.original.line.plot(ax, "-", label="Original", color="blue")
-
         # Get and plot fitted camber line
         fitted_camber = self.result.eval(self.original.s)
-        fitted_camber.line.plot(ax, "--", label="Fitted", color="red")
+        fitted_camber.line.plot(ax, "r-", label="Fitted")
+
+        # Plot original camber line
+        self.original.line.plot(ax, "k-", alpha=0.5, label="Original")
 
         ax.axis("equal")
         ax.legend()
