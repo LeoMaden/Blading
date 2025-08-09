@@ -1485,7 +1485,7 @@ class ApproximateCamberResult:
         """
         # If success, plot the final section
         if self.success and self.section is not None:
-            return self.section.plot()
+            return self.section.plot_comparison(self.section_perimiter)
 
         # If not, plot final iteration result, if iteration loop result is available
         if (
