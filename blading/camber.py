@@ -211,6 +211,12 @@ def _camber_from_angle(
     return Camber(translated_line)
 
 
+def create_camber(params: CamberParams) -> CamberResult:
+    """Create a camber line from given parameters."""
+    non_dim_result = create_non_dim_camber_spline(params.non_dim)
+    return CamberResult(non_dim_result, params)
+
+
 @dataclass
 class FitCamberResult:
     result: CamberResult

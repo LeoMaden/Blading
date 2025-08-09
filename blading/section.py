@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from enum import Enum
 from .thickness import Thickness, ThicknessParams, create_thickness
-from .camber import Camber, CamberParams
+from .camber import Camber, CamberParams, create_camber
 from .plotting import create_multi_view_plot
 from geometry.curves import PlaneCurve
 import numpy as np
@@ -25,36 +25,98 @@ class ReferencePoint(Enum):
         return self.value.replace("_", " ").title()
 
 
-@dataclass
+@dataclass(frozen=True, init=False)
 class Section:
     thickness: Thickness  # Thickness of the section along the camber line
     camber: Camber  # Camber line of this section on stream surface (m, c) coordinates
     stream_line: PlaneCurve | None  # Stream line curve in (x, r) meridional coordinates
 
-    thickness_params: ThicknessParams | None = None
-    camber_params: CamberParams | None = None
+    thickness_params: ThicknessParams | None
+    camber_params: CamberParams | None
 
-    reference_point: ReferencePoint = ReferencePoint.Centroid
+    reference_point: ReferencePoint
 
-    def with_thickness(self, thickness: Thickness | ThicknessParams) -> "Section":
-        """Create a new Section with the specified thickness."""
-        if isinstance(thickness, Thickness):
-            new_thickness = thickness
-        elif isinstance(thickness, ThicknessParams):
-            new_thickness = create_thickness(thickness).eval(self.camber.s)
-        else:
-            raise TypeError(
-                f"thickness must be Thickness or ThicknessParams not {type(thickness).__name__}"
-            )
+    def __init__(
+        self,
+        thickness: Thickness | ThicknessParams,
+        camber: Camber | CamberParams,
+        s: NDArray | None = None,
+        stream_line: PlaneCurve | None = None,
+        reference_point: ReferencePoint = ReferencePoint.Centroid,
+    ):
+        match camber, thickness:
+            case Camber(), Thickness():
+                camber_params = None
+                thickness_params = None
+
+            case CamberParams(), ThicknessParams():
+                if s is None:
+                    raise ValueError(
+                        "s must be provided when using CamberParams and ThicknessParams"
+                    )
+                camber_params = camber
+                thickness_params = thickness
+                camber = create_camber(camber_params).eval(s)
+                thickness = create_thickness(thickness_params).eval(s)
+
+            case Camber(), ThicknessParams():
+                if s is not None:
+                    raise ValueError("s should not be provided when using Camber")
+                camber_params = None
+                thickness_params = thickness
+                thickness = create_thickness(thickness_params).eval(camber.s)
+
+            case CamberParams(), Thickness():
+                if s is not None:
+                    raise ValueError("s should not be provided when using Thickness")
+                camber_params = camber
+                thickness_params = None
+                camber = create_camber(camber_params).eval(thickness.s)
+
+        self._set("thickness", thickness)
+        self._set("camber", camber)
+        self._set("stream_line", stream_line)
+        self._set("camber_params", camber_params)
+        self._set("thickness_params", thickness_params)
+        self._set("reference_point", reference_point)
+
+    def with_thickness(
+        self, thickness: Thickness | ThicknessParams, s: NDArray | None = None
+    ) -> "Section":
+        """Return a new Section with the specified thickness."""
+        camber = self.camber_params or self.camber
 
         return Section(
-            thickness=new_thickness,
-            camber=self.camber,
+            thickness=thickness,
+            camber=camber,
+            s=s,
             stream_line=self.stream_line,
-            thickness_params=self.thickness_params,
-            camber_params=self.camber_params,
             reference_point=self.reference_point,
         )
+
+    def with_camber(
+        self, camber: Camber | CamberParams, s: NDArray | None = None
+    ) -> "Section":
+        """Return a new Section with the specified camber."""
+        thickness = self.thickness_params or self.thickness
+
+        return Section(
+            thickness=thickness,
+            camber=camber,
+            s=s,
+            stream_line=self.stream_line,
+            reference_point=self.reference_point,
+        )
+
+    @property
+    def is_camber_param(self) -> bool:
+        """Check if the camber is parameterized."""
+        return self.camber_params is not None
+
+    @property
+    def is_thickness_param(self) -> bool:
+        """Check if the thickness is parameterized."""
+        return self.thickness_params is not None
 
     def upper_curve(self) -> PlaneCurve:
         cl = self.camber.line.coords
@@ -146,6 +208,118 @@ class Section:
 
         return np.array([cx, cy])
 
+    def _create_plot_functions(
+        self,
+        name_prefix: str = "",
+        show_reference_point: bool = True,
+        show_camber_line: bool = True,
+        show_LE_circle: bool = True,
+        colors: dict | None = None,
+    ) -> list:
+        """Create plot functions for this section.
+
+        Parameters
+        ----------
+        name_prefix : str, optional
+            Prefix to add to labels. Default is "".
+        show_reference_point : bool, optional
+            Whether to include reference point plotting. Default is True.
+        show_camber_line : bool, optional
+            Whether to include camber line plotting. Default is True.
+        show_LE_circle : bool, optional
+            Whether to include LE circle plotting. Default is True.
+        colors : dict, optional
+            Color scheme to use. If None, uses default colors.
+
+        Returns
+        -------
+        list
+            List of plot functions for multi-view plotting.
+        """
+        if colors is None:
+            colors = {
+                "upper": "b",
+                "lower": "r",
+                "camber": "k",
+                "reference": "go",
+                "le_circle": "orange",
+            }
+
+        upper_curve, lower_curve = self.curves()
+        plot_functions = []
+
+        # Add upper and lower curves
+        upper_label = f"{name_prefix} Upper surface" if name_prefix else "Upper surface"
+        lower_label = f"{name_prefix} Lower surface" if name_prefix else "Lower surface"
+
+        plot_functions.extend(
+            [
+                lambda ax: upper_curve.plot(
+                    ax=ax, color=colors["upper"], linewidth=2, label=upper_label
+                ),
+                lambda ax: lower_curve.plot(
+                    ax=ax, color=colors["lower"], linewidth=2, label=lower_label
+                ),
+            ]
+        )
+
+        # Add camber line if requested
+        if show_camber_line:
+            camber_label = (
+                f"{name_prefix} Camber line" if name_prefix else "Camber line"
+            )
+            plot_functions.append(
+                lambda ax: self.camber.line.plot(
+                    ax=ax,
+                    color=colors["camber"],
+                    linestyle="--",
+                    linewidth=1,
+                    alpha=0.7,
+                    label=camber_label,
+                )
+            )
+
+        # Add reference point if requested
+        if show_reference_point:
+            ref_coords = self.get_reference_point_coords()
+            ref_name = self.reference_point.display_name
+            ref_label = (
+                f"{name_prefix} Reference point ({ref_name})"
+                if name_prefix
+                else f"Reference point ({ref_name})"
+            )
+            plot_functions.append(
+                lambda ax: ax.plot(
+                    ref_coords[0],
+                    ref_coords[1],
+                    colors["reference"],
+                    markersize=8,
+                    label=ref_label,
+                )
+            )
+
+        # Add leading edge circle if requested
+        if show_LE_circle:
+            sc, r = self.thickness.fit_LE_circle()
+            centre = self.camber.line.interpolate([sc]).coords
+            xc, yc = centre[0, 0], centre[0, 1]
+
+            def add_circle(ax):
+                circle = mplCircle(
+                    (xc, yc),
+                    r,
+                    color=colors["le_circle"],
+                    fill=False,
+                    linestyle="--",
+                    linewidth=1.5,
+                    label="Leading edge circle",
+                )
+                ax.add_artist(circle)
+
+            plot_functions.append(add_circle)
+
+        return plot_functions
+
     def plot(
         self,
         show_reference_point: bool = True,
@@ -171,65 +345,12 @@ class Section:
         tuple
             Tuple from create_multi_view_plot containing figure and axes objects.
         """
-        # Use multi-view plotting
-        upper_curve, lower_curve = self.curves()
-
-        # Define plot functions for multi-view plotting
-        plot_functions = [
-            lambda ax: upper_curve.plot(
-                ax=ax, color="b", linewidth=2, label="Upper surface"
-            ),
-            lambda ax: lower_curve.plot(
-                ax=ax, color="r", linewidth=2, label="Lower surface"
-            ),
-        ]
-
-        # Add camber line if requested
-        if show_camber_line:
-            plot_functions.append(
-                lambda ax: self.camber.line.plot(
-                    ax=ax,
-                    color="k",
-                    linestyle="--",
-                    linewidth=1,
-                    alpha=0.7,
-                    label="Camber line",
-                )
-            )
-
-        # Add reference point if requested
-        if show_reference_point:
-            ref_coords = self.get_reference_point_coords()
-            ref_name = self.reference_point.display_name
-            plot_functions.append(
-                lambda ax: ax.plot(
-                    ref_coords[0],
-                    ref_coords[1],
-                    "go",
-                    markersize=8,
-                    label=f"Reference point ({ref_name})",
-                )
-            )
-
-        # Add leading edge circle if requested
-        if show_LE_circle:
-            sc, r = self.thickness.fit_LE_circle()
-            centre = self.camber.line.interpolate([sc]).coords
-            xc, yc = centre[0, 0], centre[0, 1]
-
-            def add_circle(ax):
-                circle = mplCircle(
-                    (xc, yc),
-                    r,
-                    color="orange",
-                    fill=False,
-                    linestyle="--",
-                    linewidth=1.5,
-                    label="Leading edge circle",
-                )
-                ax.add_artist(circle)
-
-            plot_functions.append(add_circle)
+        # Get plot functions from shared method
+        plot_functions = self._create_plot_functions(
+            show_reference_point=show_reference_point,
+            show_camber_line=show_camber_line,
+            show_LE_circle=show_LE_circle,
+        )
 
         # Add axis formatting function
         def format_axes(ax):
@@ -276,81 +397,53 @@ class Section:
         """
         from .section_perimiter import SectionPerimiter
 
-        # Use multi-view plotting
-        upper_curve, lower_curve = self.curves()
-
-        # Define plot functions starting with this section
-        plot_functions = [
-            lambda ax: upper_curve.plot(
-                ax=ax, color="b", label=f"{this_name} Upper surface"
-            ),
-            lambda ax: lower_curve.plot(
-                ax=ax, color="r", label=f"{this_name} Lower surface"
-            ),
-            lambda ax: self.camber.line.plot(
-                ax=ax,
-                color="k",
-                linestyle="--",
-                alpha=0.7,
-                label=f"{this_name} Camber line",
-            ),
-        ]
-
-        # Add original reference point if requested
-        if show_reference_points:
-            ref_coords = self.get_reference_point_coords()
-            ref_name = self.reference_point.display_name
-            plot_functions.append(
-                lambda ax: ax.plot(
-                    ref_coords[0],
-                    ref_coords[1],
-                    "go",
-                    markersize=8,
-                    label=f"{this_name} Reference point ({ref_name})",
-                )
-            )
+        # Get plot functions for this section (no LE circle in comparison plots)
+        plot_functions = self._create_plot_functions(
+            name_prefix=this_name,
+            show_reference_point=show_reference_points,
+            show_camber_line=True,
+            show_LE_circle=False,
+        )
 
         # Add comparison object plotting functions
         if isinstance(other, Section):
-            # Plot another Section
-            other_upper_curve, other_lower_curve = other.curves()
-            plot_functions.extend(
-                [
-                    lambda ax: other_upper_curve.plot(
-                        ax=ax,
-                        color="orange",
-                        linestyle=":",
-                        label=f"{other_name} Upper surface",
-                    ),
-                    lambda ax: other_lower_curve.plot(
-                        ax=ax,
-                        color="purple",
-                        linestyle=":",
-                        label=f"{other_name} Lower surface",
-                    ),
-                    lambda ax: other.camber.line.plot(
-                        ax=ax,
-                        color="gray",
-                        linestyle="-.",
-                        alpha=0.7,
-                        label=f"{other_name} Camber line",
-                    ),
-                ]
+            # Define colors for comparison section
+            other_colors = {
+                "upper": "orange",
+                "lower": "purple",
+                "camber": "gray",
+                "reference": "mo",
+                "le_circle": "cyan",
+            }
+
+            # Get plot functions for other section
+            other_plot_functions = other._create_plot_functions(
+                name_prefix=other_name,
+                show_reference_point=show_reference_points,
+                show_camber_line=True,
+                show_LE_circle=False,
+                colors=other_colors,
             )
 
-            # Plot comparison reference point
-            if show_reference_points:
-                other_ref_coords = other.get_reference_point_coords()
-                other_ref_name = other.reference_point.display_name
-                plot_functions.append(
-                    lambda ax: ax.plot(
-                        other_ref_coords[0],
-                        other_ref_coords[1],
-                        "mo",
-                        markersize=8,
-                        label=f"{other_name} Reference point ({other_ref_name})",
-                    )
-                )
+            # Modify line styles for comparison section
+            for i, func in enumerate(other_plot_functions):
+                if i < 3:  # upper, lower, camber lines
+                    original_func = func
+
+                    def modified_func(ax, orig=original_func):
+                        # Call original function but modify the result to add linestyle
+                        result = orig(ax)
+                        # Get the last line added and modify its linestyle
+                        if ax.lines:
+                            if i < 2:  # upper and lower curves
+                                ax.lines[-1].set_linestyle(":")
+                            else:  # camber line
+                                ax.lines[-1].set_linestyle("-.")
+                        return result
+
+                    other_plot_functions[i] = modified_func
+
+            plot_functions.extend(other_plot_functions)
 
         elif isinstance(other, SectionPerimiter):
             # Plot SectionPerimiter
@@ -381,3 +474,10 @@ class Section:
             title="Section Comparison",
             show_closeups=show_closeups,
         )
+
+    def _set(self, name: str, value):
+        """Set an attribute of the Section object."""
+        if name in self.__dataclass_fields__:
+            object.__setattr__(self, name, value)
+        else:
+            raise AttributeError(f"Cannot set attribute '{name}' on Section")
