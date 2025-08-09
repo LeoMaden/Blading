@@ -48,7 +48,7 @@ def plot_zoomed_view(
     """
     # Get camber line points for determining leading and trailing edges
     camber_coords = camber_line.coords
-    
+
     if zoom_type.upper() == "LE":
         # Leading edge is at the start of the camber line
         center_x, center_y = camber_coords[0]
@@ -59,36 +59,44 @@ def plot_zoomed_view(
         default_title = "Trailing Edge"
     else:
         raise ValueError(f"Invalid zoom_type '{zoom_type}'. Must be 'LE' or 'TE'.")
-    
+
     # Calculate chord length and zoom window size
     chord_length = camber_line.length()
     zoom_size = chord_length * chord_fraction
-    
+
     # Calculate bias offsets for directional positioning
     bias_offset = zoom_size * bias
-    
+
     # Plot all functions on the axis
     for plot_func in plot_functions:
         plot_func(ax)
-    
+
     # Set title
     ax.set_title(title if title is not None else default_title)
     ax.axis("equal")
-    
+
     # Set zoom limits based on type
     if zoom_type.upper() == "LE":
         # Bias LE towards lower-left: move left (reduce x) and down (reduce y)
-        ax.set_xlim(center_x - zoom_size + bias_offset, center_x + zoom_size + bias_offset)
-        ax.set_ylim(center_y - zoom_size + bias_offset, center_y + zoom_size + bias_offset)
+        ax.set_xlim(
+            center_x - zoom_size + bias_offset, center_x + zoom_size + bias_offset
+        )
+        ax.set_ylim(
+            center_y - zoom_size + bias_offset, center_y + zoom_size + bias_offset
+        )
     else:  # TE
         # Bias TE towards upper-right: move right (increase x) and up (increase y)
-        ax.set_xlim(center_x - zoom_size - bias_offset, center_x + zoom_size - bias_offset)
-        ax.set_ylim(center_y - zoom_size - bias_offset, center_y + zoom_size - bias_offset)
-    
+        ax.set_xlim(
+            center_x - zoom_size - bias_offset, center_x + zoom_size - bias_offset
+        )
+        ax.set_ylim(
+            center_y - zoom_size - bias_offset, center_y + zoom_size - bias_offset
+        )
+
     ax.set_xticks([])
     ax.set_yticks([])
     ax.grid(True, alpha=0.3)
-    
+
     return ax
 
 
@@ -159,21 +167,21 @@ def create_multi_view_plot(
     if show_closeups and ax_le is not None and ax_te is not None:
         # Use the extracted zoomed view function for both LE and TE
         plot_zoomed_view(
-            ax_le, 
-            plot_functions, 
-            camber_line, 
+            ax_le,
+            plot_functions,
+            camber_line,
             zoom_type="LE",
             chord_fraction=chord_fraction,
-            bias=bias
+            bias=bias,
         )
-        
+
         plot_zoomed_view(
-            ax_te, 
-            plot_functions, 
-            camber_line, 
+            ax_te,
+            plot_functions,
+            camber_line,
             zoom_type="TE",
             chord_fraction=chord_fraction,
-            bias=bias
+            bias=bias,
         )
 
         fig.tight_layout()
@@ -836,6 +844,74 @@ class CamberIterationResult:
     success: bool = False
     error_message: str = ""
 
+    def plot_zoomed(
+        self, ax=None, zoom_type="LE", chord_fraction=0.02, bias=0.5, title=None
+    ):
+        """
+        Plot a zoomed-in view of leading or trailing edge on the provided or new axis.
+
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes, optional
+            Axes object to plot on. If None, creates new figure and axes.
+        zoom_type : str, optional
+            Type of zoom view: "LE" for leading edge or "TE" for trailing edge. Default is "LE".
+        chord_fraction : float, optional
+            Fraction of the chord length to use as the zoom window size. Default is 0.02.
+        bias : float, optional
+            Bias factor for positioning zoom windows. Default is 0.5.
+        title : str, optional
+            Title for the zoom view. If None, uses default based on zoom_type.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The axes object that was plotted on.
+        """
+        if ax is None:
+            fig, ax = plt.subplots()
+
+        plot_functions = self._get_plot_functions()
+        camber_line = self._get_camber_line_for_zoom()
+
+        return plot_zoomed_view(
+            ax=ax,
+            plot_functions=plot_functions,
+            camber_line=camber_line,
+            zoom_type=zoom_type,
+            title=title,
+            chord_fraction=chord_fraction,
+            bias=bias,
+        )
+
+    def plot(self, show_closeups=True):
+        """
+        Plot the camber line, section, and target connections using multi-view layout.
+
+        If success is True, also plots the new camber line.
+        Shows lines connecting corresponding points on upper and lower targets.
+
+        Parameters
+        ----------
+        show_closeups : bool, optional
+            Whether to show LE/TE closeup views.
+
+        Returns
+        -------
+        matplotlib.figure.Figure
+            The figure returned by create_multi_view_plot.
+        """
+        plot_functions = self._get_plot_functions()
+        camber_line = self._get_camber_line_for_zoom()
+        title = self._get_plot_title()
+
+        return create_multi_view_plot(
+            plot_functions=plot_functions,
+            camber_line=camber_line,
+            title=title,
+            show_closeups=show_closeups,
+        )
+
     def _get_plot_functions(self):
         """Get the plot functions for this iteration result."""
         plot_functions = [
@@ -941,72 +1017,6 @@ class CamberIterationResult:
         else:
             title = f"Camber Iteration Result (Failed - {self.error_message})"
         return title
-
-    def plot_zoomed(self, ax=None, zoom_type="LE", chord_fraction=0.02, bias=0.5, title=None):
-        """
-        Plot a zoomed-in view of leading or trailing edge on the provided or new axis.
-
-        Parameters
-        ----------
-        ax : matplotlib.axes.Axes, optional
-            Axes object to plot on. If None, creates new figure and axes.
-        zoom_type : str, optional
-            Type of zoom view: "LE" for leading edge or "TE" for trailing edge. Default is "LE".
-        chord_fraction : float, optional
-            Fraction of the chord length to use as the zoom window size. Default is 0.02.
-        bias : float, optional
-            Bias factor for positioning zoom windows. Default is 0.5.
-        title : str, optional
-            Title for the zoom view. If None, uses default based on zoom_type.
-
-        Returns
-        -------
-        matplotlib.axes.Axes
-            The axes object that was plotted on.
-        """
-        if ax is None:
-            fig, ax = plt.subplots()
-        
-        plot_functions = self._get_plot_functions()
-        camber_line = self._get_camber_line_for_zoom()
-        
-        return plot_zoomed_view(
-            ax=ax,
-            plot_functions=plot_functions,
-            camber_line=camber_line,
-            zoom_type=zoom_type,
-            title=title,
-            chord_fraction=chord_fraction,
-            bias=bias,
-        )
-
-    def plot(self, show_closeups=True):
-        """
-        Plot the camber line, section, and target connections using multi-view layout.
-
-        If success is True, also plots the new camber line.
-        Shows lines connecting corresponding points on upper and lower targets.
-
-        Parameters
-        ----------
-        show_closeups : bool, optional
-            Whether to show LE/TE closeup views.
-
-        Returns
-        -------
-        matplotlib.figure.Figure
-            The figure returned by create_multi_view_plot.
-        """
-        plot_functions = self._get_plot_functions()
-        camber_line = self._get_camber_line_for_zoom()
-        title = self._get_plot_title()
-
-        return create_multi_view_plot(
-            plot_functions=plot_functions,
-            camber_line=camber_line,
-            title=title,
-            show_closeups=show_closeups,
-        )
 
 
 def _find_best_intersection(intersections: NDArray, target_point: NDArray) -> NDArray:
@@ -1320,6 +1330,66 @@ def _run_iteration_loop(
 
 
 ################################################################################
+####################### Final section creation #################################
+################################################################################
+
+
+def create_final_section(
+    camber: Camber,
+    thickness: Thickness,
+    section: SectionPerimiter,
+    config: ApproximateCamberConfig,
+) -> Section:
+    """Create final section with extended camber and refined point distribution."""
+    camber_line = camber.line
+    param = camber.line.param
+
+    # Add refined point distribution near LE and TE
+    # First use cosine spacing to cluster points near LE and TE
+    # Then map this spacing to between the first two points for LE,
+    # and between the last two points for TE.
+    spacing_le = np.cos(np.linspace(0, np.pi / 2, config.num_points_le))
+    new_param_LE = param[1] - (param[1] - param[0]) * spacing_le
+
+    spacing_te = np.cos(np.linspace(np.pi / 2, 0, config.num_points_te))
+    new_param_TE = param[-2] + (param[-1] - param[-2]) * spacing_te
+
+    # Create new camber line parameter
+    new_param = np.r_[new_param_LE, param[2:-2], new_param_TE]
+    new_camber_line = camber_line.interpolate(new_param, k=2)
+    new_camber = Camber(new_camber_line)
+
+    # Extend thickness array to match new parameterization
+    extended_thickness_values = np.r_[
+        np.repeat(thickness.t[1], config.num_points_le),
+        thickness.t[2:-2],
+        np.repeat(thickness.t[-2], config.num_points_te),
+    ]
+    extended_thickness = Thickness(
+        new_camber.line.param, extended_thickness_values, camber.chord
+    )
+
+    improve_result = _improve_camber_robust(
+        new_camber, extended_thickness, section, config
+    )
+    if not improve_result.success:
+        improve_result.plot()
+        plt.show()
+        raise CamberApproximationError(
+            f"Failed to calculate final thickness: {improve_result.error_message}"
+        )
+
+    new_thickness = improve_result.new_thickness
+    assert new_thickness is not None, "Expected new thickness to be set"
+
+    return Section(
+        camber=new_camber,
+        thickness=new_thickness,
+        stream_line=section.stream_line,
+    )
+
+
+################################################################################
 ###################### Camber line approximation ###############################
 ################################################################################
 
@@ -1472,7 +1542,15 @@ def approximate_camber(
             error_message=loop_result.error_message,
         )
 
+    final_camber = loop_result.final_camber
+    final_thickness = loop_result.final_thickness
+    assert final_camber is not None, "Expected final camber to be set"
+    assert final_thickness is not None, "Expected final thickness to be set"
+    final_section = create_final_section(final_camber, final_thickness, section, config)
+    # final_section = None
+
     return ApproximateCamberResult(
+        section=final_section,
         section_perimiter=section,
         split_result=split_result,
         initial_extension_result=initial_extend_result,
@@ -1482,183 +1560,3 @@ def approximate_camber(
         iterations=loop_result.iterations,
         success=True,
     )
-
-    # # Create final section if successful
-    # new_section = None
-    # error_message = loop_result.error_message
-
-    # if loop_result.success:
-    #     new_section, section_error = _create_final_section_safe(
-    #         loop_result.camber, loop_result.thickness, section, approx_camber_config
-    #     )
-    #     if new_section is None:
-    #         loop_result.success = False
-    #         error_message = section_error
-    #     elif section_error:
-    #         error_message = section_error  # Warning message
-
-    # # Final callback notification
-    # if callback is not None:
-    #     final_progress = CamberProgress(
-    #         iteration=loop_result.iterations,
-    #         delta=loop_result.final_delta,
-    #         camber=loop_result.camber,
-    #         converged=loop_result.success,
-    #         error=error_message if not loop_result.success else None,
-    #     )
-    #     callback(final_progress)
-
-    # return ApproximateCamberResult(
-    #     section=new_section,
-    #     split_result=split_result,
-    #     initial_camber=initial_camber,
-    #     initial_thickness=initial_thickness,
-    #     success=loop_result.success,
-    #     iterations=loop_result.iterations,
-    #     final_delta=loop_result.final_delta,
-    #     convergence_history=loop_result.convergence_history,
-    #     error_message=error_message,
-    #     section_perimiter=section,
-    # )
-
-
-#################
-
-
-def _create_final_section_safe(
-    camber: Camber,
-    thickness: Thickness,
-    section: SectionPerimiter,
-    config: ApproximateCamberConfig,
-) -> tuple[Section | None, str]:
-    """Create final section with safe error handling."""
-    try:
-        extend_result = extend_camber_line(camber, section, config.extension_factor)
-        if not extend_result.success or not extend_result.extended_camber:
-            return None, f"Failed to extend camber line: {extend_result.error_message}"
-
-        final_section_result = create_final_section(
-            extend_result.extended_camber, thickness, section, config
-        )
-
-        if not final_section_result.success:
-            return (
-                None,
-                f"Failed to create final section: {final_section_result.error_message}",
-            )
-
-        return final_section_result.section, final_section_result.error_message
-
-    except Exception as e:
-        return None, f"Unexpected error in final section creation: {str(e)}"
-
-
-@dataclass
-class FinalSectionResult:
-    section: Section | None
-    success: bool
-    error_message: str = ""
-
-
-def create_final_section(
-    extended_camber: Camber,
-    thickness: Thickness,
-    section: SectionPerimiter,
-    config: ApproximateCamberConfig,
-) -> FinalSectionResult:
-    """Create final section with extended camber and refined point distribution."""
-    try:
-        camber_line = extended_camber.line
-
-        # Add refined point distribution near LE and TE
-        t = camber_line.param
-        if len(t) < 3:
-            return FinalSectionResult(
-                section=None,
-                success=False,
-                error_message="Camber line has insufficient points for refinement",
-            )
-
-        spacing_le = np.cos(np.linspace(0, np.pi / 2, config.num_points_le))
-        t_new_le = t[1] - (t[1] - t[0]) * spacing_le
-
-        spacing_te = np.cos(np.linspace(np.pi / 2, 0, config.num_points_te))
-        t_new_te = t[-2] + (t[-1] - t[-2]) * spacing_te
-
-        t_new = np.r_[t_new_le, t[2:-2], t_new_te]
-
-        # Validate parameter range
-        if np.any(t_new < 0) or np.any(t_new > 1):
-            return FinalSectionResult(
-                section=None,
-                success=False,
-                error_message="Refined parameter values outside valid range [0,1]",
-            )
-
-        refined_camber_line = camber_line.interpolate(t_new, k=2)
-        refined_camber = Camber(refined_camber_line)
-        final_chord = refined_camber.chord
-
-        # Extend thickness array to match new parameterization
-        if len(thickness.t) == 0:
-            return FinalSectionResult(
-                section=None,
-                success=False,
-                error_message="Empty thickness array provided",
-            )
-
-        extended_thickness_values = np.r_[
-            np.repeat(thickness.t[0], config.num_points_le),
-            thickness.t[1:-1] if len(thickness.t) > 2 else [thickness.t[0]],
-            np.repeat(thickness.t[-1], config.num_points_te),
-        ]
-
-        # Re-calculate thicknesses with robust error handling
-        if len(refined_camber_line.coords) < 3:
-            return FinalSectionResult(
-                section=None,
-                success=False,
-                error_message="Refined camber has insufficient points",
-            )
-
-        camber_no_ends = Camber(refined_camber_line[1:-1])
-        extended_thickness_no_ends = Thickness(
-            t_new[1:-1], extended_thickness_values[1:-1], None
-        )
-        iter_result = _improve_camber_robust(
-            camber_no_ends, extended_thickness_no_ends, section, config
-        )
-
-        if not iter_result.success:
-            # Fallback: use original thickness distribution
-            final_thickness_values = np.r_[0, extended_thickness_values[1:-1], 0]
-            final_thickness = Thickness(t_new, final_thickness_values, final_chord)
-            return FinalSectionResult(
-                section=Section(
-                    thickness=final_thickness,
-                    camber=Camber(refined_camber_line),
-                    stream_line=section.stream_line,
-                ),
-                success=False,
-                error_message=f"Warning: Used fallback thickness due to: {iter_result.error_message}",
-            )
-
-        # Success case: use recalculated thickness
-        final_thickness_values = np.r_[0, iter_result.thickness.t, 0]
-        final_thickness = Thickness(t_new, final_thickness_values, final_chord)
-
-        return FinalSectionResult(
-            section=Section(
-                thickness=final_thickness,
-                camber=Camber(refined_camber_line),
-                stream_line=section.stream_line,
-            ),
-            success=True,
-        )
-
-    except Exception as e:
-        return FinalSectionResult(
-            section=None,
-            success=False,
-            error_message=f"Unexpected error in create_final_section: {str(e)}",
-        )
