@@ -490,9 +490,12 @@ class ExtendCamberResult:
 
         # Add extended camber plotting if successful
         if self.success and self.extended_line is not None:
+            # Capture references to avoid None type issues in lambdas
+            extended_line = self.extended_line
+
             plot_functions.extend(
                 [
-                    lambda ax: self.extended_line.plot(
+                    lambda ax: extended_line.plot(
                         ax=ax,
                         label="Extended Camber",
                         color="m",
@@ -500,13 +503,13 @@ class ExtendCamberResult:
                         alpha=0.9,
                     ),
                     lambda ax: ax.plot(
-                        *self.extended_line.start(),
+                        *extended_line.start(),
                         "co",
                         markeredgecolor="k",
                         label="New LE Point",
                     ),
                     lambda ax: ax.plot(
-                        *self.extended_line.end(),
+                        *extended_line.end(),
                         "cs",
                         markeredgecolor="k",
                         label="New TE Point",
@@ -1146,7 +1149,7 @@ def _run_iteration_loop(
         convergence_history=convergence_history,
         error_message=(
             f"Failed to converge after {config.max_iterations} iterations "
-            f"(final delta: {delta:.2e}, tolerance: {config.tolerance:.2e})"
+            f"(final delta: {final_delta:.2e}, tolerance: {config.tolerance:.2e})"
         ),
     )
 
@@ -1272,18 +1275,20 @@ class ApproximateCamberResult:
             self.initial_thickness is not None
         ), "Expected initial thickness to be valid"
 
+        # Capture references to avoid None type issues in lambdas
+        section_perimiter = self.section_perimiter
+        upper_curve = self.split_result.upper_curve
+        lower_curve = self.split_result.lower_curve
+        initial_camber = self.initial_camber
+
         # Define plot functions
         plot_functions = [
-            lambda ax: self.section_perimiter.curve.plot(
+            lambda ax: section_perimiter.curve.plot(
                 ax=ax, label="Section Curve", color="k"
             ),
-            lambda ax: self.split_result.upper_curve.plot(
-                ax=ax, label="Upper Curve", color="r"
-            ),
-            lambda ax: self.split_result.lower_curve.plot(
-                ax=ax, label="Lower Curve", color="g"
-            ),
-            lambda ax: self.initial_camber.line.plot(
+            lambda ax: upper_curve.plot(ax=ax, label="Upper Curve", color="r"),
+            lambda ax: lower_curve.plot(ax=ax, label="Lower Curve", color="g"),
+            lambda ax: initial_camber.line.plot(
                 ax=ax, label="Initial Camber", color="b"
             ),
         ]
