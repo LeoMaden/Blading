@@ -108,6 +108,32 @@ class Section:
             reference_point=self.reference_point,
         )
 
+    def with_reference_point(self, reference_point: ReferencePoint) -> "Section":
+        """Return a new Section with the specified reference point."""
+        camber = self.camber_params or self.camber
+        thickness = self.thickness_params or self.thickness
+        s = self.camber.s
+        return Section(
+            thickness=thickness,
+            camber=camber,
+            s=s,
+            stream_line=self.stream_line,
+            reference_point=reference_point,
+        )
+
+    def with_stream_line(self, stream_line: PlaneCurve) -> "Section":
+        """Return a new Section with the specified stream line."""
+        camber = self.camber_params or self.camber
+        thickness = self.thickness_params or self.thickness
+        s = self.camber.s
+        return Section(
+            thickness=thickness,
+            camber=camber,
+            s=s,
+            stream_line=stream_line,
+            reference_point=self.reference_point,
+        )
+
     @property
     def is_camber_param(self) -> bool:
         """Check if the camber is parameterized."""
@@ -255,10 +281,10 @@ class Section:
         plot_functions.extend(
             [
                 lambda ax: upper_curve.plot(
-                    ax=ax, color=colors["upper"], linewidth=2, label=upper_label
+                    ax=ax, color=colors["upper"], label=upper_label
                 ),
                 lambda ax: lower_curve.plot(
-                    ax=ax, color=colors["lower"], linewidth=2, label=lower_label
+                    ax=ax, color=colors["lower"], label=lower_label
                 ),
             ]
         )
@@ -273,7 +299,6 @@ class Section:
                     ax=ax,
                     color=colors["camber"],
                     linestyle="--",
-                    linewidth=1,
                     alpha=0.7,
                     label=camber_label,
                 )
@@ -293,7 +318,6 @@ class Section:
                     ref_coords[0],
                     ref_coords[1],
                     colors["reference"],
-                    markersize=8,
                     label=ref_label,
                 )
             )
@@ -311,7 +335,6 @@ class Section:
                     color=colors["le_circle"],
                     fill=False,
                     linestyle="--",
-                    linewidth=1.5,
                     label="Leading edge circle",
                 )
                 ax.add_artist(circle)
@@ -372,7 +395,7 @@ class Section:
         other,
         this_name: str = "Original",
         other_name: str = "Comparison",
-        show_reference_points: bool = True,
+        show_reference_points: bool = False,
         show_closeups: bool = True,
     ):
         """Plot comparison between this section and another Section or SectionPerimiter.
