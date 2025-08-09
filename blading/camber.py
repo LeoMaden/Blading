@@ -329,7 +329,18 @@ def fit_camber(camber: Camber) -> FitCamberResult:
         non_dim_fit = create_spline(x)
         return float(np.trapezoid((non_dim - non_dim_fit) ** 2, s))
 
-    result = minimize(objective, x0)
+    # Constrain the optimisation to improve reliability
+    def gt_zero(constraint_func):
+        return {"type": "ineq", "fun": constraint_func}
+
+    constraints = [
+        gt_zero(lambda x: x[0]),  # ss_turning_frac > 0
+        gt_zero(lambda x: 1 - x[0]),  # ss_turning_frac < 1
+        gt_zero(lambda x: x[1]),  # ss_chord_frac > 0
+        gt_zero(lambda x: 1 - x[1]),  # ss_chord_frac < 1
+    ]
+
+    result = minimize(objective, x0, constraints=constraints)
     if not result.success:
         raise RuntimeError(f"Optimization failed: {result.message}")
 
