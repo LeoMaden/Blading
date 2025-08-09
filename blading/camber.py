@@ -63,6 +63,11 @@ class Camber:
         """Chord length of the camber line."""
         return self.line.length()
 
+    def interpolate(self, s: NDArray) -> "Camber":
+        """Interpolate the camber line at given s values."""
+        new_line = self.line.interpolate(s)
+        return Camber(new_line)
+
     def plot_non_dim(self, ax=None, *plot_args, **plot_kwargs):
         if ax is None:
             _, ax = plt.subplots()

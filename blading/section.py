@@ -134,6 +134,24 @@ class Section:
             reference_point=self.reference_point,
         )
 
+    def with_s(self, s: NDArray) -> "Section":
+        """Return a new Section with the specified s values."""
+        camber = self.camber_params or self.camber
+        thickness = self.thickness_params or self.thickness
+
+        if isinstance(camber, Camber):
+            camber = camber.interpolate(s)
+        if isinstance(thickness, Thickness):
+            thickness = thickness.interpolate(s)
+
+        return Section(
+            thickness=thickness,
+            camber=camber,
+            s=s,
+            stream_line=self.stream_line,
+            reference_point=self.reference_point,
+        )
+
     @property
     def is_camber_param(self) -> bool:
         """Check if the camber is parameterized."""

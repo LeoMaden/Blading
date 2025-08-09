@@ -22,6 +22,12 @@ class Thickness:
         if len(self.s) != len(self.t):
             raise ValueError("s and t arrays must have the same length")
 
+        if self.s[0] != 0 or self.s[-1] != 1:
+            raise ValueError(
+                "s must start at 0 and end at 1. "
+                f"Actual values: start={self.s[0]}, end={self.s[-1]}"
+            )
+
     @property
     def t_over_c(self) -> NDArray:
         """Thickness to chord ratio."""
@@ -79,6 +85,23 @@ class Thickness:
     def has_blunt_TE(self) -> bool:
         """Check if the trailing edge is blunt (non-zero thickness)."""
         return not self.has_round_TE
+
+    def interpolate(self, s_new: NDArray) -> "Thickness":
+        """
+        Return a new Thickness object with interpolated values at new normalised arc lengths.
+
+        Parameters
+        ----------
+        s_new : NDArray
+            New normalised arc length array.
+
+        Returns
+        -------
+        Thickness
+            New Thickness object with interpolated values.
+        """
+        t_new = self.t_spline(s_new)
+        return Thickness(s_new, t_new, self.chord)
 
     def fit_LE_circle(self, num_points: int = 5) -> tuple[float, float]:
         """
