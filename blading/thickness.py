@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 from circle_fit import taubinSVD
 from numpy.polynomial import Polynomial
 from typing import Callable, Optional
-from scipy.optimize import minimize, fmin
+from scipy.optimize import minimize, fmin, fsolve
 from geometry.curves import plot_plane_curve
 
 
@@ -109,6 +109,17 @@ class Thickness:
         ax.plot(self.s, self.t, *plot_args, **plot_kwargs)
         ax.set_xlabel("Normalised arc length")
         ax.set_ylabel("Thickness")
+        ax.grid(True)
+        return ax
+
+    def plot_shape_space(self, ax=None, *plot_args, **plot_kwargs):
+        """Plot shape space representation."""
+        if ax is None:
+            _, ax = plt.subplots()
+        ss = self.shape_space
+        ax.plot(self.s, ss, *plot_args, **plot_kwargs)
+        ax.set_xlabel("Normalised arc length")
+        ax.set_ylabel("Shape space value")
         ax.grid(True)
         return ax
 
@@ -559,18 +570,20 @@ class FitThicknessResult:
         if ax is None:
             _, ax = plt.subplots()
 
-        # Calculate shape space domain
-        s_LE = -result.params.fitted.stretch_amount
-        s_TE = 1.0
-        s_plot = np.linspace(s_LE, s_TE, 200)
-
         # Plot fitted spline
-        ss_fit = result.ss_spline(s_plot)
-        ax.plot(s_plot, ss_fit, "r-", linewidth=2, label="Fitted spline")
+        thickness_fit = self.result.eval(self.original.s)
+        thickness_fit.plot_shape_space(ax, "r-", label="Fitted spline")
 
-        # Plot control points
+        # Un-stretch and plot control points
+        s_control_stretched = result.ss_control_points[:, 0]
+        stretch_func = self.result.stretch_func
+        # Solve for unstretched values of s
+        s_control: NDArray = fsolve(
+            lambda s: stretch_func(s) - s_control_stretched, s_control_stretched
+        )  # type: ignore
+
         ax.plot(
-            result.ss_control_points[:, 0],
+            s_control,
             result.ss_control_points[:, 1],
             "bo",
             markersize=8,
@@ -578,19 +591,48 @@ class FitThicknessResult:
         )
 
         # Plot original shape space representation
-        s_orig = self.original.s
-        t_orig = self.original.t
-        ss_orig = shape_space.value(s_orig, t_orig, t_orig[-1])
-        s_stretch_orig = result.stretch_func(s_orig)
-        ax.plot(s_stretch_orig, ss_orig, "k-", alpha=0.7, linewidth=2, label="Original")
+        self.original.plot_shape_space(ax, "k-", alpha=0.7, label="Original")
 
-        ax.set_xlabel("Stretched arc length")
+        ax.set_xlabel("Normalised arc length")
         ax.set_ylabel("Shape space value")
         ax.set_title("Shape Space Comparison")
         ax.legend()
         ax.grid(True, alpha=0.3)
 
         return ax
+
+    def compare_thickness(self, ax=None):
+        """Plot comparison of fitted and original thickness distributions."""
+        if ax is None:
+            _, ax = plt.subplots()
+
+        # Plot original thickness
+        self.original.plot(ax, "k-", label="Original", alpha=0.7)
+
+        # Plot fitted thickness
+        thickness_fit = self.result.eval(self.original.s)
+        thickness_fit.plot(ax, "r-", label="Fitted")
+
+        ax.set_xlabel("Normalised arc length")
+        ax.set_ylabel("Thickness")
+        ax.set_title("Thickness Comparison")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        return ax
+
+    def compare_summary(self, figsize=(12, 5)):
+        """Create side-by-side comparison with shape space on left and thickness on right."""
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+
+        # Shape space comparison on the left
+        self.compare_shape_space(ax=ax1)
+
+        # Thickness comparison on the right
+        self.compare_thickness(ax=ax2)
+
+        plt.tight_layout()
+        return fig, (ax1, ax2)
 
 
 def fit_thickness(thickness: Thickness) -> FitThicknessResult:
