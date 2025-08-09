@@ -53,9 +53,9 @@ class Thickness:
     @cached_property
     def shape_space(self) -> NDArray:
         """Shape space representation of the thickness distribution."""
-        if self.t_TE == 0:
+        if not self.has_blunt_TE:
             raise ValueError(
-                "Trailing edge thickness must be non-zero for shape space representation"
+                "Trailing edge must be blunt for shape space representation"
             )
         return shape_space.value(self.s, self.t, self.t_TE)
 
@@ -69,6 +69,16 @@ class Thickness:
         """Wedge angle at trailing edge in radians."""
         grad_TE = (self.t[-1] - self.t[-2]) / (self.s[-1] - self.s[-2])
         return -np.arctan(grad_TE)
+
+    @property
+    def has_round_TE(self) -> bool:
+        """Check if the trailing edge is round."""
+        return bool(np.isclose(self.t_TE, 0).all())
+
+    @property
+    def has_blunt_TE(self) -> bool:
+        """Check if the trailing edge is blunt (non-zero thickness)."""
+        return not self.has_round_TE
 
     def fit_LE_circle(self, num_points: int = 5) -> tuple[float, float]:
         """
@@ -124,7 +134,7 @@ class Thickness:
 
     def with_blunt_TE(self) -> "Thickness":
         """Create a new Thickness with a blunt trailing edge."""
-        if self.t_TE != 0:
+        if self.has_blunt_TE:
             raise ValueError(
                 f"Trailing edge is already blunt: thickness is {self.t_TE}"
             )
@@ -170,7 +180,7 @@ class Thickness:
         """Create a new Thickness with a round trailing edge."""
         if self.chord is None:
             raise ValueError("Chord must be defined for round TE calculation")
-        if self.t_TE == 0:
+        if self.has_round_TE:
             raise ValueError("Trailing edge must be blunt to create a round TE.")
 
         # Thickness relative to chord.
@@ -219,8 +229,9 @@ class MeasuredThicknessParams:
     thickness_TE: float
     wedge_TE: float
     ss_stretch_join: float
-    ss_grad_TE: float  # Measured from original thickness
+    ss_grad_TE: float
     chord: Optional[float]
+    round_TE: bool
 
 
 @dataclass
@@ -245,6 +256,14 @@ def measure_thickness(
     thickness: Thickness, stretch_join: float
 ) -> MeasuredThicknessParams:
     """Measure thickness parameters that can be directly extracted from a blade section."""
+
+    # Assume trailing edge is round if t_TE is zero.
+    round_TE = thickness.has_round_TE
+
+    # Remove round trailing edge if it exists.
+    if round_TE:
+        thickness = thickness.with_blunt_TE()
+
     s, t = thickness.s, thickness.t
 
     # Thickness curvature at maximum thickness.
@@ -276,6 +295,7 @@ def measure_thickness(
         ss_stretch_join=ss_stretch_join,
         ss_grad_TE=ss_grad_TE,
         chord=thickness.chord,
+        round_TE=round_TE,
     )
 
 
@@ -302,7 +322,13 @@ class ThicknessResult:
         t = shape_space.inverse(s, ss, self.params.measured.thickness_TE)
         chord = self.params.measured.chord
 
-        return Thickness(s, t, chord)
+        thickness = Thickness(s, t, chord)
+
+        # Add back round trailing edge if it was specified.
+        if self.params.measured.round_TE:
+            thickness = thickness.with_round_TE()
+
+        return thickness
 
     # def create_thickness_distribution(self, s: NDArray) -> NDArray:
     #     """Create thickness distribution for given arc length distribution."""
@@ -570,11 +596,18 @@ class FitThicknessResult:
             _, ax = plt.subplots()
 
         # Plot fitted spline
+        # If the original thickness has a round TE, remove it for shape space comparison
         thickness_fit = self.result.eval(self.original.s)
+        if self.result.params.measured.round_TE:
+            thickness_fit = thickness_fit.with_blunt_TE()
         thickness_fit.plot_shape_space(ax, "r-", label="Fitted spline")
 
         # Plot original shape space representation
-        self.original.plot_shape_space(ax, "k-", alpha=0.5, label="Original")
+        # If the original thickness has a round TE, remove it for shape space comparison
+        original_thickness = self.original
+        if self.original.has_round_TE:
+            original_thickness = original_thickness.with_blunt_TE()
+        original_thickness.plot_shape_space(ax, "k-", alpha=0.5, label="Original")
 
         # Un-stretch and plot control points
         s_control_stretched = result.ss_control_points[:, 0]
@@ -588,7 +621,10 @@ class FitThicknessResult:
 
         ax.set_xlabel("Normalised arc length")
         ax.set_ylabel("Shape space value")
-        ax.set_title("Shape Space Comparison")
+        title = "Shape Space Comparison"
+        if self.original.has_round_TE:
+            title += " (Round TE removed for shape space)"
+        ax.set_title(title)
         ax.legend()
         ax.grid(True, alpha=0.3)
 
