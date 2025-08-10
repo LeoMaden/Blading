@@ -977,8 +977,10 @@ def _improve_camber_robust(
         new_camber_line = extend_result.unwrap()
 
         # Create final camber and thickness objects
-        new_thickness = Thickness(thickness.s, new_thickness_values, thickness.chord)
         final_camber = Camber(new_camber_line)
+        new_thickness = Thickness(
+            final_camber.s, new_thickness_values, final_camber.chord
+        )
 
         # Calculate delta as the sum of distance moved by each camber point
         delta = np.sum(
@@ -1191,7 +1193,7 @@ def create_final_section(
         np.repeat(thickness.t[-2], config.num_points_te),
     ]
     extended_thickness = Thickness(
-        new_camber.line.param, extended_thickness_values, camber.chord
+        new_camber.line.param, extended_thickness_values, new_camber.chord
     )
 
     improve_result = _improve_camber_robust(
@@ -1203,6 +1205,10 @@ def create_final_section(
         raise CamberApproximationError(
             f"Failed to calculate final thickness: {improve_result.error_message}"
         )
+
+    # IMPORTANT: Do not use the new camber from the improvement result, as the high
+    # density of points near the LE and TE cause the iteration process to go unstable
+    # and produce an incorrect camber line.
 
     new_thickness = improve_result.new_thickness
     assert new_thickness is not None, "Expected new thickness to be set"
