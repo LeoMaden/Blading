@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Any, Protocol
 import numpy as np
 from dataclasses import dataclass
@@ -321,3 +322,19 @@ class Blade:
 
         # Update the sections list (use object.__setattr__ for frozen dataclass)
         object.__setattr__(self, "sections", interpolated_sections)
+
+    def pickle(self, file: str | Path):
+        with open(file, "wb") as f:
+            import pickle
+
+            pickle.dump(self, f)
+
+    @staticmethod
+    def unpickle(file: str | Path) -> "Blade":
+        with open(file, "rb") as f:
+            import pickle
+
+            blade = pickle.load(f)
+        if not isinstance(blade, Blade):
+            raise TypeError("Unpickled object is not a Blade instance")
+        return blade
