@@ -73,6 +73,9 @@ class Section:
                 thickness_params = None
                 camber = create_camber(camber_params).eval(thickness.s)
 
+        # Ensure thickness uses correct reference chord
+        thickness = Thickness(thickness.s, thickness.t, camber.chord)
+
         self._set("thickness", thickness)
         self._set("camber", camber)
         self._set("stream_line", stream_line)

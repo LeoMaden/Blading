@@ -42,11 +42,6 @@ class Blade:
         if not all(s.stream_line for s in self.sections):
             raise ValueError("All sections must have a stream line defined")
 
-        if not all(s.camber.chord == s.thickness.chord for s in self.sections):
-            raise ValueError(
-                "All sections must have the same chord length for camber and thickness"
-            )
-
         # Interpolate all sections to have the same number of points
         self._interpolate_sections_to_common_param()
 
