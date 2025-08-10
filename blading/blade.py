@@ -3,6 +3,7 @@ from typing import Any, Protocol
 import numpy as np
 from dataclasses import dataclass
 from .section import Section, ReferencePoint
+from .section_perimiter import SectionPerimiter
 import matplotlib.pyplot as plt
 from numpy.typing import NDArray
 from geometry.curves import PlaneCurve, SpaceCurve
@@ -101,10 +102,15 @@ class Blade:
         span = (r_ref - r_min) / (r_max - r_min)
         return span
 
-    def get_nearest_section(self, span: float) -> Section:
-        """Get the section nearest to the given spanwise location."""
+    def _get_section_idx(self, span: float) -> int:
+        """Get the index of the section nearest to the given spanwise location."""
         span_values = self.get_span()
         idx = np.argmin(np.abs(span_values - span))
+        return int(idx)
+
+    def get_nearest_section(self, span: float) -> Section:
+        """Get the section nearest to the given spanwise location."""
+        idx = self._get_section_idx(span)
         return self.sections[idx]
 
     def plot_meridional(self, ax=None):
@@ -146,6 +152,23 @@ class Blade:
         ax.axis("equal")
         ax.legend()
         return ax
+
+    def compare_section_at_span(
+        self,
+        span: float,
+        compare: list[Section] | list[SectionPerimiter],
+        title: str | None = None,
+        this_name="Original",
+        other_name="Comparison",
+    ):
+        idx = self._get_section_idx(span)
+        section = self.sections[idx]
+        compare_section = compare[idx]
+        val = section.plot_comparison(
+            compare_section, this_name=this_name, other_name=other_name
+        )
+        val[1].set_title(title or f"Section at span {span:.2f}")
+        return val
 
     def plot_angles(
         self, ax=None, show_turning: bool = True, show_stagger: bool = True
