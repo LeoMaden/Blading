@@ -304,7 +304,6 @@ class Section:
         show_reference_point: bool = True,
         show_camber_line: bool = True,
         show_LE_circle: bool = True,
-        colors: dict | None = None,
     ) -> list:
         """Create plot functions for this section.
 
@@ -318,22 +317,12 @@ class Section:
             Whether to include camber line plotting. Default is True.
         show_LE_circle : bool, optional
             Whether to include LE circle plotting. Default is True.
-        colors : dict, optional
-            Color scheme to use. If None, uses default colors.
 
         Returns
         -------
         list
             List of plot functions for multi-view plotting.
         """
-        if colors is None:
-            colors = {
-                "upper": "b",
-                "lower": "r",
-                "camber": "k",
-                "reference": "go",
-                "le_circle": "orange",
-            }
 
         upper_curve, lower_curve = self.curves()
         plot_functions = []
@@ -344,12 +333,8 @@ class Section:
 
         plot_functions.extend(
             [
-                lambda ax: upper_curve.plot(
-                    ax=ax, color=colors["upper"], label=upper_label
-                ),
-                lambda ax: lower_curve.plot(
-                    ax=ax, color=colors["lower"], label=lower_label
-                ),
+                lambda ax: upper_curve.plot(ax=ax, label=upper_label),
+                lambda ax: lower_curve.plot(ax=ax, label=lower_label),
             ]
         )
 
@@ -361,7 +346,6 @@ class Section:
             plot_functions.append(
                 lambda ax: self.camber.line.plot(
                     ax=ax,
-                    color=colors["camber"],
                     linestyle="--",
                     alpha=0.7,
                     label=camber_label,
@@ -381,7 +365,6 @@ class Section:
                 lambda ax: ax.plot(
                     ref_coords[0],
                     ref_coords[1],
-                    colors["reference"],
                     label=ref_label,
                 )
             )
@@ -396,7 +379,6 @@ class Section:
                 circle = mplCircle(
                     (xc, yc),
                     r,
-                    color=colors["le_circle"],
                     fill=False,
                     linestyle="--",
                     label="Leading edge circle",
@@ -494,14 +476,6 @@ class Section:
 
         # Add comparison object plotting functions
         if isinstance(other, Section):
-            # Define colors for comparison section
-            other_colors = {
-                "upper": "orange",
-                "lower": "purple",
-                "camber": "gray",
-                "reference": "mo",
-                "le_circle": "cyan",
-            }
 
             # Get plot functions for other section
             other_plot_functions = other._create_plot_functions(
@@ -509,7 +483,6 @@ class Section:
                 show_reference_point=show_reference_points,
                 show_camber_line=True,
                 show_LE_circle=False,
-                colors=other_colors,
             )
 
             # Modify line styles for comparison section
@@ -537,7 +510,6 @@ class Section:
             plot_functions.append(
                 lambda ax: other.curve.plot(
                     ax=ax,
-                    color="cyan",
                     linestyle=":",
                     label=f"{other_name} Perimeter",
                 )

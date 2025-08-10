@@ -108,35 +108,43 @@ class Blade:
 
     def plot_meridional(self, ax=None):
         if ax is None:
-            _, ax = plt.subplots(figsize=(10, 8))
+            _, ax = plt.subplots()
 
         i_hub = 0
         i_cas = len(self.sections) - 1
 
         # Plot the stream line for each section
+        hub_cas_color, stream_line_color = None, None
+
         for i, section in enumerate(self.sections):
             stream_line = section.stream_line
             assert stream_line is not None, "Expected section to have a stream line"
+
             if i == i_hub or i == i_cas:
                 label = "Hub and Casing Lines" if i == i_hub else ""
-                stream_line.plot(ax, "r-", label=label)
+                stream_line.plot(ax, label=label, color=hub_cas_color)
+                if hub_cas_color is None:
+                    hub_cas_color = ax.get_lines()[-1].get_color()
             else:
-                stream_line.plot(ax, "k-", alpha=0.5)
+                label = "Stream Lines" if i == 1 else ""
+                stream_line.plot(ax, alpha=0.2, label=label, color=stream_line_color)
+                if stream_line_color is None:
+                    stream_line_color = ax.get_lines()[-1].get_color()
 
         # Plot the leading and trailing edges
-        self.meridional_LE_curve().plot(ax, "b-", label="Leading Edge")
-        self.meridional_TE_curve().plot(ax, "g-", label="Trailing Edge")
+        self.meridional_LE_curve().plot(ax, label="Leading and Trailing Edges")
+        c = ax.get_lines()[-1].get_color()
+        self.meridional_TE_curve().plot(ax, color=c)
 
         ref_point_name = self.sections[0].reference_point.display_name
         ref_point_label = f"Reference Point ({ref_point_name})"
-        self.meridional_ref_point_curve().plot(
-            ax, "k-", alpha=0.5, label=ref_point_label
-        )
+        self.meridional_ref_point_curve().plot(ax, alpha=0.5, label=ref_point_label)
 
         ax.set_title(f"Meridional View ({len(self.sections)} Sections)")
 
         ax.axis("equal")
         ax.legend()
+        return ax
 
     def plot_angles(
         self, ax=None, show_turning: bool = True, show_stagger: bool = True
@@ -194,7 +202,10 @@ class Blade:
             (lambda s: s.thickness_params.measured.s_max_t, "Pos. Max. thickness")
         ]
         return self._plot_spanwise_params(
-            ax, funcs_labels, "Spanwise Position of Maximum Thickness", "s"
+            ax,
+            funcs_labels,
+            "Spanwise Position of Maximum Thickness",
+            "Normalised arc length (s)",
         )
 
     def _plot_spanwise_params(
@@ -253,7 +264,7 @@ class Blade:
             ax.plot(param_values, span, *plot_args, label=label, **plot_kwargs)
 
         if add_origin:
-            ax.plot([0], [0], "k-")
+            ax.plot([0], [0], "-")
 
         ax.set_xlabel(xlabel)
         ax.set_ylabel(
