@@ -158,7 +158,7 @@ class Blade:
         span: float,
         compare: list[Section] | list[SectionPerimiter],
         title: str | None = None,
-        this_name="Original",
+        this_name="This",
         other_name="Comparison",
     ):
         idx = self._get_section_idx(span)
