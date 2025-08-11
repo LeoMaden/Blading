@@ -1,3 +1,4 @@
+import logging
 from icecream import ic
 from dataclasses import dataclass
 from functools import cached_property
@@ -10,6 +11,8 @@ from circle_fit import taubinSVD
 from numpy.polynomial import Polynomial
 from typing import Callable, Optional
 from scipy.optimize import minimize, fmin, fsolve
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -103,9 +106,15 @@ class Thickness:
         t_new = self.t_spline(s_new)
         return Thickness(s_new, t_new, self.chord)
 
-    def fit_LE_circle(self, num_points: int = 5) -> tuple[float, float]:
+    def fit_LE_circle(self, s_LE_fit: float = 0.0001) -> tuple[float, float]:
         """
         Fit a circle to the leading edge of the thickness distribution.
+
+        Parameters
+        ----------
+        s_LE_fit : float
+            Normalised arc length up to which to fit the leading edge circle.
+            Default is 0.0001 (0.01% of chord).
 
         Returns
         -------
@@ -115,8 +124,14 @@ class Thickness:
         if self.chord is None:
             raise ValueError("Chord must be defined for LE circle fitting")
 
-        s = self.s[:num_points]
-        t_over_c = self.t_over_c[:num_points]
+        # Mask points in the first s_LE_fit
+        mask = self.s < s_LE_fit
+        if len(mask) < 10:
+            msg = f"Fitting leading edge circle with less than 10 points ({len(mask)})."
+            logger.warning(msg)
+
+        s = self.s[mask]
+        t_over_c = self.t_over_c[mask]
 
         upper = np.c_[s, 0.5 * t_over_c]
         lower = np.c_[s, -0.5 * t_over_c]
