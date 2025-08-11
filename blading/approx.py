@@ -10,6 +10,7 @@ from .section_perimiter import SectionPerimiter
 from .thickness import Thickness
 from .plotting import plot_zoomed_view, create_multi_view_plot
 from scipy.signal import find_peaks
+from scipy.interpolate import make_interp_spline
 
 
 ################################################################################
@@ -47,7 +48,8 @@ class SplitConfig:
     - Higher min_segment_length values require longer continuous low-curvature regions
     """
 
-    curvature_threshold_factor: float = 0.9
+    curvature_threshold_factor_LE: float = 0.3
+    curvature_threshold_factor_TE: float = 0.8
     curvature_prominence_factor: float = 0.1
     min_segment_length: int = 10
 
@@ -73,7 +75,7 @@ class SplitSectionResult:
     segments : list of tuple
         List of (start, end) index tuples representing the detected low-curvature
         segments along the perimeter.
-    curvature_threshold : float
+    curvature_threshold : NDArray
         The threshold value used for curvature-based masking during splitting.
     s_data : NDArray
         Normalized arc length parameter values along the section perimeter.
@@ -98,7 +100,7 @@ class SplitSectionResult:
 
     section: SectionPerimiter
     segments: list[tuple[int, int]]
-    curvature_threshold: float
+    curvature_threshold: NDArray
     s_data: NDArray
     curvature_data: NDArray
     error_message: str = ""
@@ -122,9 +124,7 @@ class SplitSectionResult:
 
         ax.set_title("Curvature of Section")
         ax.semilogy(self.s_data, self.curvature_data, label="Curvature", color="k")
-        ax.axhline(
-            self.curvature_threshold, color="red", linestyle="--", label="Threshold"
-        )
+        ax.semilogy(self.s_data, self.curvature_threshold, "r--", label="Threshold")
         ax.set_xlabel("Normalised Arc Length (s)")
         for segment in self.segments:
             ax.semilogy(
@@ -228,13 +228,15 @@ def split_section(
     # Normalised arc length parameter, enforced by SectionPerimiter
     s = section.curve.param
 
-    # Calculate curvature
+    # Calculate curvature and normalised arc length
     curvature = section.curve.curvature()
 
     # Apply threshold masking
     low_curvature_mask, threshold = _threshold_masking(
         curvature=curvature,
-        threshold_factor=config.curvature_threshold_factor,
+        s=s,
+        threshold_factor_LE=config.curvature_threshold_factor_LE,
+        threshold_factor_TE=config.curvature_threshold_factor_TE,
         prominence_factor=config.curvature_prominence_factor,
     )
 
@@ -282,8 +284,12 @@ def split_section(
 
 
 def _threshold_masking(
-    curvature, threshold_factor: float = 3, prominence_factor: float = 0.1
-) -> tuple[NDArray, float]:
+    curvature,
+    s,
+    threshold_factor_LE: float = 0.3,
+    threshold_factor_TE: float = 0.8,
+    prominence_factor: float = 0.1,
+) -> tuple[NDArray, NDArray]:
     """
     Mask high curvature regions based on a threshold.
 
@@ -293,6 +299,8 @@ def _threshold_masking(
     ----------
     curvature : array_like
         Array of curvature values.
+    s : array_like
+        Normalised arc length parameter values corresponding to the curvature.
     threshold_factor : float, optional
         Multiplier applied to the smallest detected peak to determine the curvature threshold. Default is 3.
     prominence_factor : float, optional
@@ -302,7 +310,7 @@ def _threshold_masking(
     -------
     low_curvature_mask : ndarray of bool
         Boolean mask array where True indicates low curvature regions (below threshold).
-    threshold : float
+    threshold : NDArray
         The curvature threshold used for masking.
 
     Raises
@@ -317,8 +325,21 @@ def _threshold_masking(
     if len(peaks) == 0:
         raise ValueError("No peaks found in curvature data")
 
+    # Find the maximum curvature and minimum peak
+    max_curv = np.max(curvature)
+    min_peak_curv = np.min(curvature[peaks])
+
     # Create mask: True for low curvature, False for high curvature
-    threshold = np.min(curvature[peaks]) * threshold_factor
+    # Assume largest curvature is at the leading edge
+    thresh_LE = max_curv * threshold_factor_LE
+    thresh_TE = min_peak_curv * threshold_factor_TE
+    threshold = np.exp(
+        make_interp_spline(
+            [0, 0.5, 1],
+            np.log([thresh_LE, thresh_TE, thresh_LE]),
+            k=1,
+        )(s)
+    )
 
     low_curvature_mask = curvature < threshold
 
