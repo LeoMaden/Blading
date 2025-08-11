@@ -7,6 +7,7 @@ from .section_perimiter import SectionPerimiter
 import matplotlib.pyplot as plt
 from numpy.typing import NDArray
 from geometry.curves import PlaneCurve, SpaceCurve
+from matplotlib.axes import Axes
 
 
 class SectionFunc(Protocol):
@@ -64,6 +65,19 @@ class Blade:
         """Get the reference point used for all sections."""
         # Reference point consistency is ensured by __post_init__
         return self.sections[0].reference_point
+
+    @property
+    def span_length(self) -> float:
+        return self.meridional_ref_point_curve().length()
+
+    @property
+    def avg_chord(self) -> float:
+        """Get the average chord length of the blade."""
+        return float(np.mean(self.get_spanwise_value(lambda s: s.camber.chord)))
+
+    @property
+    def aspect_ratio(self) -> float:
+        return self.span_length / self.avg_chord
 
     def get_spanwise_value(self, section_func: SectionFunc) -> NDArray:
         """Get a spanwise value for each section using the provided value function."""
@@ -171,131 +185,114 @@ class Blade:
         return val
 
     def plot_angles(
-        self, ax=None, show_turning: bool = True, show_stagger: bool = True
+        self,
+        ax: Axes | None = None,
+        show_turning: bool = True,
+        show_stagger: bool = True,
+        *plot_args,
+        **plot_kwargs,
     ):
+        if ax is None:
+            _, ax = plt.subplots()
+
         funcs_labels = [
-            (lambda s: np.degrees(s.camber_params.angles.LE), "Leading edge"),
-            (lambda s: np.degrees(s.camber_params.angles.TE), "Trailing edge"),
+            (lambda s: np.degrees(s.camber.angle_LE), "Leading Edge"),
+            (lambda s: np.degrees(s.camber.angle_TE), "Trailing Edge"),
         ]
         if show_turning:
             funcs_labels.append(
-                (lambda s: np.degrees(s.camber_params.angles.delta), "Turning angle")
+                (lambda s: np.degrees(s.camber.angle_delta), "Turning Angle")
             )
         if show_stagger:
-            funcs_labels.append((lambda s: np.degrees(s.stagger), "Stagger angle"))
+            funcs_labels.append((lambda s: np.degrees(s.stagger), "Stagger Angle"))
 
-        return self._plot_spanwise_params(
-            ax,
-            funcs_labels,
-            "Spanwise Metal Angles",
-            "Angle (degrees)",
-            add_origin=True,
-        )
+        for func, label in funcs_labels:
+            self.plot_spanwise(func, ax, *plot_args, label=label, **plot_kwargs)
 
-    def plot_chord(self, ax=None, include_axial_chord: bool = False):
+        ax.set_xlabel("Angle (degrees)")
+        ax.set_title("Spanwise Blade Angles")
+        ax.legend()
+
+        return ax
+
+    def plot_chord(
+        self,
+        ax=None,
+        include_axial_chord: bool = False,
+        units: str | None = None,
+        *plot_args,
+        **plot_kwargs,
+    ):
+        if ax is None:
+            _, ax = plt.subplots()
+
         funcs_labels = [(lambda s: s.camber.chord, "Chord")]
 
         if include_axial_chord:
             funcs_labels.append((lambda s: s.axial_chord, "Axial Chord"))
 
-        return self._plot_spanwise_params(
-            ax, funcs_labels, "Spanwise Chord Distribution", "Chord length"
+        for func, label in funcs_labels:
+            self.plot_spanwise(func, ax, label=label, *plot_args, **plot_kwargs)
+
+        ax.set_xlabel("Length" + (f" ({units})" if units else ""))
+        ax.set_title("Spanwise Chord Distribution")
+        ax.legend()
+
+        return ax
+
+    def plot_max_t(self, ax=None, units: str | None = None, *plot_args, **plot_kwargs):
+        ax = self.plot_spanwise(
+            lambda s: s.thickness.max_t, ax, *plot_args, **plot_kwargs
         )
 
-    def plot_max_t(self, ax=None):
-        """Plot the maximum thickness distribution along the span."""
-        funcs_labels = [(lambda s: s.thickness_params.measured.max_t, "Max Thickness")]
-        return self._plot_spanwise_params(
-            ax, funcs_labels, "Spanwise Maximum Thickness", "Thickness"
-        )
+        ax.set_xlabel("Thickness" + (f" ({units})" if units else ""))
+        ax.set_title("Spanwise Maximum Thickness")
 
-    def plot_LE_radius(self, ax=None):
-        """Plot the leading edge radius distribution along the span."""
-        funcs_labels = [(lambda s: s.thickness_params.measured.radius_LE, "LE Radius")]
-        return self._plot_spanwise_params(
-            ax,
-            funcs_labels,
-            "Spanwise Leading Edge Radius",
-            "Radius",
-            add_origin=True,
-        )
+        return ax
 
-    def plot_s_max_t(self, ax=None):
-        """Plot the maximum thickness distribution along the span using s coordinates."""
-        funcs_labels = [
-            (lambda s: s.thickness_params.measured.s_max_t, "Pos. Max. thickness")
-        ]
-        return self._plot_spanwise_params(
-            ax,
-            funcs_labels,
-            "Spanwise Position of Maximum Thickness",
-            "Normalised arc length (s)",
-        )
-
-    def _plot_spanwise_params(
-        self,
-        ax,
-        param_funcs_labels_kwargs,
-        title: str,
-        xlabel: str,
-        add_origin: bool = False,
+    def plot_LE_radius(
+        self, ax=None, units: str | None = None, *plot_args, **plot_kwargs
     ):
-        """Helper method to plot spanwise parameter distributions.
+        ax = self.plot_spanwise(
+            lambda s: s.thickness.fit_LE_circle()[1], ax, *plot_args, **plot_kwargs
+        )
 
-        Parameters
-        ----------
-        ax : matplotlib.axes.Axes or None
-            Matplotlib axes to plot on. If None, creates new subplot.
-        param_funcs_labels_kwargs : list of tuple
-            List of (function, label, plot_args, plot_kwargs) tuples where:
-            - function: callable that takes Section and returns parameter value
-            - label: str, legend label for this parameter
-            - plot_args: tuple, positional arguments for ax.plot (optional, defaults to ())
-            - plot_kwargs: dict, keyword arguments for ax.plot (optional, defaults to {})
-        title : str
-            Plot title.
-        xlabel : str
-            X-axis label.
-        add_origin : bool, optional
-            Whether to add origin point for reference, by default False.
+        ax.set_xlabel("Radius" + (f" ({units})" if units else ""))
+        ax.set_title("Spanwise Leading Edge Radius")
 
-        Returns
-        -------
-        matplotlib.axes.Axes
-            The axes object with the plot.
-        """
+        return ax
+
+    def plot_s_max_t(self, ax=None, *plot_args, **plot_kwargs):
+        ax = self.plot_spanwise(
+            lambda s: s.thickness.s_max_t, ax, *plot_args, **plot_kwargs
+        )
+
+        ax.set_xlabel("Normalised arc length")
+        ax.set_title("Spanwise Position of Maximum Thickness")
+
+        return ax
+
+    def plot_spanwise(
+        self,
+        func: SectionFunc,
+        ax: Axes | None = None,
+        *plot_args,
+        **plot_kwargs,
+    ) -> Axes:
+
         if ax is None:
             _, ax = plt.subplots()
 
         span = self.get_span()
+        var = np.array([func(s) for s in self.sections])
 
-        ax.set_title(title)
-        for item in param_funcs_labels_kwargs:
-            if len(item) == 2:
-                f, label = item
-                plot_args, plot_kwargs = (), {}
-            elif len(item) == 3:
-                f, label, plot_args = item
-                plot_kwargs = {}
-            elif len(item) == 4:
-                f, label, plot_args, plot_kwargs = item
-            else:
-                raise ValueError(
-                    "Each item must be (func, label) or (func, label, args) or (func, label, args, kwargs)"
-                )
+        ax.plot(var, span, *plot_args, **plot_kwargs)
 
-            param_values = self.get_spanwise_value(f)
-            ax.plot(param_values, span, *plot_args, label=label, **plot_kwargs)
-
-        if add_origin:
-            ax.plot([0], [0], "-")
-
-        ax.set_xlabel(xlabel)
         ax.set_ylabel(
-            f"Spanwise location at {self.reference_point.display_name.lower()}"
+            f"Spanwise position at {self.reference_point.display_name.lower()}"
         )
-        ax.grid()
-        ax.legend()
+        ax.grid(True)
+
         return ax
 
     def _check_reference_point_consistency(self) -> bool:
