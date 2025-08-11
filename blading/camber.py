@@ -59,6 +59,11 @@ class Camber:
         return self.angle[-1]
 
     @property
+    def angle_delta(self) -> float:
+        """Turning angle from LE to TE."""
+        return self.angle_LE - self.angle_TE
+
+    @property
     def chord(self) -> float:
         """Chord length of the camber line."""
         return self.line.length()
