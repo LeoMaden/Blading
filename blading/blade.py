@@ -268,7 +268,7 @@ class Blade:
         )
 
         ax.set_xlabel("Normalised arc length")
-        ax.set_title("Spanwise Position of Maximum Thickness")
+        ax.set_title("Spanwise Pos. of Max. Thickness")
 
         return ax
 
