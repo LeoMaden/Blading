@@ -354,7 +354,9 @@ def fit_camber(camber: Camber) -> FitCamberResult:
         gt_zero(lambda x: 0.8 - x[1]),  # ss_chord_frac < 0.8
     ]
 
-    result = minimize(objective, x0, constraints=constraints)
+    e0 = objective(x0)
+    tol = 1e-8 * e0
+    result = minimize(objective, x0, constraints=constraints, tol=tol)
     if not result.success:
         raise RuntimeError(f"Optimization failed: {result.message}")
 

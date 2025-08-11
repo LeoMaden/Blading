@@ -726,7 +726,7 @@ def fit_thickness(thickness: Thickness) -> FitThicknessResult:
     constraints = _create_thickness_fitting_constraints()
     _validate_initial_guess(x0, constraints)
     e0 = err(x0)
-    tol = 1e-4 * e0
+    tol = 1e-8 * e0
     opt = minimize(err, x0, tol=tol, constraints=constraints)
     if not opt.success:
         raise RuntimeError(repr(opt))
