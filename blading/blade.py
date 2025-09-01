@@ -79,6 +79,13 @@ class Blade:
     def aspect_ratio(self) -> float:
         return self.span_length / self.avg_chord
 
+    @property
+    def hub_tip_ratio(self) -> float:
+        curve = self.meridional_ref_point_curve()
+        r_hub = curve.start()[1]
+        r_tip = curve.end()[1]
+        return r_hub / r_tip
+
     def get_spanwise_value(self, section_func: SectionFunc) -> NDArray:
         """Get a spanwise value for each section using the provided value function."""
         values = np.array([section_func(section) for section in self.sections])

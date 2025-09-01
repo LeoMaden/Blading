@@ -156,6 +156,45 @@ class NonDimCamberResult:
         """Evaluate the non-dimensional camber spline at given s values."""
         return self.spline(s)
 
+    def plot(
+        self,
+        ax=None,
+        s: NDArray | None = None,
+        show_control_points: bool = True,
+    ):
+        """Plot the non-dimensional camber spline and control points."""
+        if ax is None:
+            _, ax = plt.subplots()
+
+        if s is None:
+            s = np.linspace(0, 1, 100)
+
+        non_dim = self.eval(s)
+        (a,) = ax.plot(s, non_dim, "r-", label="Non-dim camber")
+
+        # Plot control points
+        x_control = self.t_star
+        y_control = self.coefs
+        i_dca = [0, 3, 6]
+        i_interior = [1, 2, 4, 5]
+        (b,) = ax.plot(
+            x_control[i_dca], y_control[i_dca], "bo--", alpha=0.5, label="DCA control"
+        )
+        (c,) = ax.plot(
+            x_control[i_interior],
+            y_control[i_interior],
+            "bx",
+            alpha=0.5,
+            label="Style control",
+        )
+
+        ax.legend(handles=[a, b, c])
+        ax.set_ylabel("Non-dimensional Camber")
+        ax.set_xlabel("Normalised Arc Length")
+        ax.grid(True)
+
+        return ax
+
 
 def _dca_camber_spline(ss_turning: float, ss_chord: float) -> BSpline:
     return make_interp_spline(
@@ -263,17 +302,21 @@ class FitCamberResult:
         y_control = self.result.non_dim_result.coefs
         i_dca = [0, 3, 6]
         i_interior = [1, 2, 4, 5]
-        ax.plot(x_control[i_dca], y_control[i_dca], "bo", label="DCA control")
-        ax.plot(x_control[i_dca], y_control[i_dca], "b--", alpha=0.5)
+        ax.plot(
+            x_control[i_dca], y_control[i_dca], "bo--", alpha=0.5, label="DCA control"
+        )
         ax.plot(
             x_control[i_interior],
             y_control[i_interior],
             "bx",
-            label="Camber style control",
+            alpha=0.5,
+            label="Style control",
         )
 
         ax.legend()
-        ax.set_title("Non-dimensional Camber Comparison")
+        ax.set_ylabel("Non-dimensional Camber")
+        ax.set_xlabel("Normalised Arc Length")
+        ax.grid(True)
 
         return ax
 
@@ -296,10 +339,11 @@ class FitCamberResult:
         le_angle = np.degrees(self.result.params.angles.LE)
         te_angle = np.degrees(self.result.params.angles.TE)
         turning_angle = le_angle - te_angle
-        ax.set_title(
-            f"Camber Line Comparison (LE: {le_angle:.1f}°, TE: {te_angle:.1f}°, Δ: {turning_angle:.1f}°)"
-        )
+        ax.set_title(f"Blade-to-blade Comparison")
         ax.grid(True, alpha=0.3)
+        ax.set_xlabel("Meridional distance $m$")
+        ax.set_ylabel("Circumferential distance $c$")
+        ax.set(xticks=[], yticks=[])
 
         return ax
 

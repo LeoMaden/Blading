@@ -149,13 +149,17 @@ class Thickness:
         rad = rad_over_c * self.chord  # type: ignore
         return s_centre, rad
 
-    def plot(self, ax=None, *plot_args, **plot_kwargs):
+    def plot(self, ax=None, normalise: bool = False, *plot_args, **plot_kwargs):
         """Plot thickness distribution."""
         if ax is None:
             _, ax = plt.subplots()
-        ax.plot(self.s, self.t, *plot_args, **plot_kwargs)
+        if normalise:
+            ax.plot(self.s, self.t_over_c, *plot_args, **plot_kwargs)
+            ax.set_ylabel("Thickness-to-chord ratio")
+        else:
+            ax.plot(self.s, self.t, *plot_args, **plot_kwargs)
+            ax.set_ylabel("Thickness")
         ax.set_xlabel("Normalised arc length")
-        ax.set_ylabel("Thickness")
         ax.grid(True)
         return ax
 
@@ -668,27 +672,25 @@ class FitThicknessResult:
 
         return ax
 
-    def compare_thickness(self, ax=None):
+    def compare_thickness(self, ax=None, normalise: bool = True):
         """Plot comparison of fitted and original thickness distributions."""
         if ax is None:
             _, ax = plt.subplots()
 
         # Plot fitted thickness
         thickness_fit = self.result.eval(self.original.s)
-        thickness_fit.plot(ax, "r-", label="Fitted")
+        thickness_fit.plot(ax, normalise, "r-", label="Fitted")
 
         # Plot original thickness
-        self.original.plot(ax, "k-", label="Original", alpha=0.5)
+        self.original.plot(ax, normalise, "k-", label="Original", alpha=0.5)
 
-        ax.set_xlabel("Normalised arc length")
-        ax.set_ylabel("Thickness")
         ax.set_title("Thickness Comparison")
         ax.legend()
         ax.grid(True, alpha=0.3)
 
         return ax
 
-    def compare_summary(self, figsize=(12, 5)):
+    def compare_summary(self, figsize=(12, 5), normalise: bool = True):
         """Create side-by-side comparison with shape space on left and thickness on right."""
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
 
@@ -696,7 +698,7 @@ class FitThicknessResult:
         self.compare_shape_space(ax=ax1)
 
         # Thickness comparison on the right
-        self.compare_thickness(ax=ax2)
+        self.compare_thickness(ax=ax2, normalise=normalise)
 
         plt.tight_layout()
         return fig, (ax1, ax2)

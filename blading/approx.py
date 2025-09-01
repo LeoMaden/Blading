@@ -123,9 +123,12 @@ class SplitSectionResult:
             fig, ax = plt.subplots()
 
         ax.set_title("Curvature of Section")
-        ax.semilogy(self.s_data, self.curvature_data, label="Curvature", color="k")
+        ax.semilogy(
+            self.s_data, self.curvature_data, label="Curvature", color="k", lw=0.8
+        )
         ax.semilogy(self.s_data, self.curvature_threshold, "r--", label="Threshold")
-        ax.set_xlabel("Normalised Arc Length (s)")
+        ax.set_xlabel("Normalised Arc Length")
+        ax.set_ylabel("Curvature")
         for segment in self.segments:
             ax.semilogy(
                 self.s_data[segment[0] : segment[1]],
@@ -152,16 +155,23 @@ class SplitSectionResult:
         if ax is None:
             fig, ax = plt.subplots()
 
-        self.section.curve.plot(ax=ax, label="Section", color="k", linestyle="--")
+        self.section.curve.plot(
+            ax=ax, label="Section", color="k", linestyle="--", lw=0.8
+        )
 
         if not self.upper_curve or not self.lower_curve:
             ax.set_title("No valid upper/lower curves found")
         else:
-            self.upper_curve.plot(ax=ax, label="Upper Curve", linewidth=2)
-            self.lower_curve.plot(ax=ax, label="Lower Curve", linewidth=2)
+            self.upper_curve.plot(ax=ax, label="Upper Curve")
+            self.lower_curve.plot(ax=ax, label="Lower Curve")
 
         ax.legend()
         ax.axis("equal")
+        ax.set(xticks=[], yticks=[])
+        ax.set(
+            xlabel=r"Meridional distance $m$", ylabel=r"Circumferencial distance $c$"
+        )
+        ax.set_title("Extracted curves")
         return ax
 
     def plot_summary(self):
@@ -1044,6 +1054,30 @@ class IterationLoopResult:
     convergence_history: list[float] = field(default_factory=list)
     iterations: int = 0
     error_message: str = ""
+
+    def plot_convergence(self, ax=None):
+        """
+        Plot convergence history of delta values over iterations.
+
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes, optional
+            Axes object to plot on. If None, creates new figure and axes.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The axes object containing the convergence plot.
+        """
+        if ax is None:
+            fig, ax = plt.subplots()
+
+        ax.semilogy(self.convergence_history, linestyle="-")
+        ax.set_title("Convergence History")
+        ax.set_xlabel("Iteration")
+        ax.set_ylabel("Delta")
+        ax.grid(True)
+        return ax
 
 
 @dataclass
