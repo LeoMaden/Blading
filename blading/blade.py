@@ -46,7 +46,7 @@ class Blade:
             raise ValueError("All sections must have a stream line defined")
 
         # Interpolate all sections to have the same number of points
-        self._interpolate_sections_to_common_param()
+        # self._interpolate_sections_to_common_param()
 
     @property
     def is_camber_param(self) -> bool:
@@ -322,33 +322,33 @@ class Blade:
         )
         return camber_consistent and thickness_consistent
 
-    def _interpolate_sections_to_common_param(self) -> None:
-        """Interpolate all sections to have the same parameter distribution.
+    # def _interpolate_sections_to_common_param(self) -> None:
+    #     """Interpolate all sections to have the same parameter distribution.
 
-        Uses the parameter from the section with the highest number of points.
-        """
-        if len(self.sections) <= 1:
-            return  # Nothing to interpolate
+    #     Uses the parameter from the section with the highest number of points.
+    #     """
+    #     if len(self.sections) <= 1:
+    #         return  # Nothing to interpolate
 
-        # Find the section with the most points
-        max_points = 0
-        reference_param = None
+    #     # Find the section with the most points
+    #     max_points = 0
+    #     reference_param = None
 
-        for section in self.sections:
-            this_s = section.camber.s
-            num_points = len(this_s)
-            if num_points > max_points:
-                max_points = num_points
-                reference_param = this_s
+    #     for section in self.sections:
+    #         this_s = section.camber.s
+    #         num_points = len(this_s)
+    #         if num_points > max_points:
+    #             max_points = num_points
+    #             reference_param = this_s
 
-        if reference_param is None:
-            raise ValueError("Could not determine reference parameter")
+    #     if reference_param is None:
+    #         raise ValueError("Could not determine reference parameter")
 
-        # Interpolate all sections to the reference parameter
-        interpolated_sections = [sec.with_s(reference_param) for sec in self.sections]
+    #     # Interpolate all sections to the reference parameter
+    #     interpolated_sections = [sec.with_s(reference_param) for sec in self.sections]
 
-        # Update the sections list (use object.__setattr__ for frozen dataclass)
-        object.__setattr__(self, "sections", interpolated_sections)
+    #     # Update the sections list (use object.__setattr__ for frozen dataclass)
+    #     object.__setattr__(self, "sections", interpolated_sections)
 
     def pickle(self, file: str | Path):
         with open(file, "wb") as f:

@@ -15,7 +15,7 @@ from scipy.optimize import minimize, fmin, fsolve
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
+@dataclass
 class Thickness:
     s: NDArray  # Normalised arc length
     t: NDArray  # Thickness distribution

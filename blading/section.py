@@ -1,3 +1,4 @@
+from scipy.interpolate import make_interp_spline
 from dataclasses import dataclass, field
 from enum import Enum
 from .thickness import Thickness, ThicknessParams, create_thickness
@@ -25,7 +26,7 @@ class ReferencePoint(Enum):
         return self.value.replace("_", " ").title()
 
 
-@dataclass(frozen=True, init=False)
+@dataclass
 class Section:
     thickness: Thickness  # Thickness of the section along the camber line
     camber: Camber  # Camber line of this section on stream surface (m, c) coordinates
@@ -36,124 +37,36 @@ class Section:
 
     reference_point: ReferencePoint
 
-    def __init__(
-        self,
-        thickness: Thickness | ThicknessParams,
-        camber: Camber | CamberParams,
-        s: NDArray | None = None,
-        stream_line: PlaneCurve | None = None,
-        reference_point: ReferencePoint = ReferencePoint.Centroid,
-    ):
-        match camber, thickness:
-            case Camber(), Thickness():
-                camber_params = None
-                thickness_params = None
-
-            case CamberParams(), ThicknessParams():
-                if s is None:
-                    raise ValueError(
-                        "s must be provided when using CamberParams and ThicknessParams"
-                    )
-                camber_params = camber
-                thickness_params = thickness
-                camber = create_camber(camber_params).eval(s)
-                thickness = create_thickness(thickness_params).eval(s)
-
-            case Camber(), ThicknessParams():
-                if s is not None:
-                    raise ValueError("s should not be provided when using Camber")
-                camber_params = None
-                thickness_params = thickness
-                thickness = create_thickness(thickness_params).eval(camber.s)
-
-            case CamberParams(), Thickness():
-                if s is not None:
-                    raise ValueError("s should not be provided when using Thickness")
-                camber_params = camber
-                thickness_params = None
-                camber = create_camber(camber_params).eval(thickness.s)
-
-        # Ensure thickness uses correct reference chord
-        thickness = Thickness(thickness.s, thickness.t, camber.chord)
-
-        self._set("thickness", thickness)
-        self._set("camber", camber)
-        self._set("stream_line", stream_line)
-        self._set("camber_params", camber_params)
-        self._set("thickness_params", thickness_params)
-        self._set("reference_point", reference_point)
-
-    def with_thickness(
-        self, thickness: Thickness | ThicknessParams, s: NDArray | None = None
+    @staticmethod
+    def from_params(
+        s: NDArray,
+        thickness_params: ThicknessParams,
+        camber_params: CamberParams,
+        stream_line: PlaneCurve | None,
+        reference_point: ReferencePoint,
     ) -> "Section":
-        """Return a new Section with the specified thickness."""
-        camber = self.camber_params or self.camber
-
+        thickness = create_thickness(thickness_params).eval(s)
+        camber = create_camber(camber_params).eval(s)
         return Section(
             thickness=thickness,
             camber=camber,
-            s=s,
-            stream_line=self.stream_line,
-            reference_point=self.reference_point,
-        )
-
-    def with_camber(
-        self, camber: Camber | CamberParams, s: NDArray | None = None
-    ) -> "Section":
-        """Return a new Section with the specified camber."""
-        thickness = self.thickness_params or self.thickness
-
-        return Section(
-            thickness=thickness,
-            camber=camber,
-            s=s,
-            stream_line=self.stream_line,
-            reference_point=self.reference_point,
-        )
-
-    def with_reference_point(self, reference_point: ReferencePoint) -> "Section":
-        """Return a new Section with the specified reference point."""
-        camber = self.camber_params or self.camber
-        thickness = self.thickness_params or self.thickness
-        s = self.camber.s
-        return Section(
-            thickness=thickness,
-            camber=camber,
-            s=s,
-            stream_line=self.stream_line,
+            stream_line=stream_line,
+            thickness_params=thickness_params,
+            camber_params=camber_params,
             reference_point=reference_point,
         )
 
-    def with_stream_line(self, stream_line: PlaneCurve) -> "Section":
-        """Return a new Section with the specified stream line."""
-        camber = self.camber_params or self.camber
-        thickness = self.thickness_params or self.thickness
-        s = self.camber.s
-        return Section(
-            thickness=thickness,
-            camber=camber,
-            s=s,
-            stream_line=stream_line,
-            reference_point=self.reference_point,
-        )
+    def unwrap_thickness_params(self) -> ThicknessParams:
+        """Get the thickness parameters, raising an error if not parameterized."""
+        if self.thickness_params is None:
+            raise ValueError("Thickness is not parameterized")
+        return self.thickness_params
 
-    def with_s(self, s: NDArray) -> "Section":
-        """Return a new Section with the specified s values."""
-        camber = self.camber_params or self.camber
-        thickness = self.thickness_params or self.thickness
-
-        if isinstance(camber, Camber):
-            camber = camber.interpolate(s)
-        if isinstance(thickness, Thickness):
-            thickness = thickness.interpolate(s)
-
-        return Section(
-            thickness=thickness,
-            camber=camber,
-            s=s,
-            stream_line=self.stream_line,
-            reference_point=self.reference_point,
-        )
+    def unwrap_camber_params(self) -> CamberParams:
+        """Get the camber parameters, raising an error if not parameterized."""
+        if self.camber_params is None:
+            raise ValueError("Camber is not parameterized")
+        return self.camber_params
 
     @property
     def is_camber_param(self) -> bool:
@@ -236,8 +149,11 @@ class Section:
 
         m = curve.x
         c = curve.y
-        xr = self.stream_line.interpolate(m)
-        x, r = xr.x, xr.y
+        stream_line_spline = make_interp_spline(
+            self.stream_line.arc_length(), self.stream_line.coords
+        )
+        xr = stream_line_spline(m)
+        x, r = xr[:, 0], xr[:, 1]
         t = c / r  # c is defined as r * t
         coords = np.c_[x, r, t]
         return SpaceCurve.new_unit_speed(coords)
@@ -533,10 +449,3 @@ class Section:
             title="Section Comparison",
             show_closeups=show_closeups,
         )
-
-    def _set(self, name: str, value):
-        """Set an attribute of the Section object."""
-        if name in self.__dataclass_fields__:
-            object.__setattr__(self, name, value)
-        else:
-            raise AttributeError(f"Cannot set attribute '{name}' on Section")
